@@ -1,0 +1,39 @@
+%{ if fgt_hostname != "" ~}
+config system global
+    set hostname ${fgt_hostname}
+end
+%{ endif ~}
+
+%{ if fgt_multi_vdom ~}
+config system global
+    set vdom-mode multi-vdom
+end
+%{ endif ~}
+
+%{ for intf_name, intf_value in network_interfaces ~}
+%{ if fgt_multi_vdom ~}
+config vdom
+edit ${ lookup(intf_value, "vdom", "root") }
+%{ endif ~}
+config system interface
+    edit "port${intf_value.device_index + 1}"
+        set allowaccess ping https ssh snmp http telnet fgfm
+        %{ if fgt_multi_vdom ~}
+        set vdom ${ lookup(intf_value, "vdom", "root") }
+        %{ endif ~}
+        set mode dhcp
+        %{ if lookup(intf_value, "enable_public_ip", false) ~}
+        set defaultgw enable
+        %{ else ~}
+        set distance 6
+        %{ endif ~}
+        %{ if lookup(intf_value, "description", "") != "" ~}
+        set description ${intf_value["description"]}
+        %{ endif ~}
+    next
+end
+
+%{ if fgt_multi_vdom ~}
+end
+%{ endif ~}
+%{ endfor ~}
