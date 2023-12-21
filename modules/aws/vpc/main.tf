@@ -1,13 +1,20 @@
 locals {
-  vpc_id = var.existing_vpc == null ? aws_vpc.vpc[0].id : contains(keys(var.existing_vpc), "id") ? var.existing_vpc.id : data.aws_vpc.vpc[0].id
+  vpc_id = var.existing_vpc != null ? data.aws_vpc.vpc[0].id : var.vpc_name == "" ? null : aws_vpc.vpc[0].id
+  igw    = var.existing_igw != null ? data.aws_internet_gateway.igw[0] : var.igw_name == "" ? null : aws_internet_gateway.igw[0]
+}
+
+resource "null_resource" "validation_check_vpc" {
+  count = var.existing_vpc == null && var.vpc_name == "" ? (
+    "ERROR: Either existing_vpc or vpc_name needs to be provided."
+  ) : 0
 }
 
 ## VPC
 data "aws_vpc" "vpc" {
-  count = var.existing_vpc == null ? 0 : contains(keys(var.existing_vpc), "id") ? 0 : 1
+  count = var.existing_vpc == null ? 0 : 1
 
   cidr_block = lookup(var.existing_vpc, "cidr_block", null)
-
+  id         = lookup(var.existing_vpc, "id", null)
   tags = merge(
     contains(keys(var.existing_vpc), "name") ? {
       Name = var.existing_vpc.name
@@ -17,7 +24,7 @@ data "aws_vpc" "vpc" {
 }
 
 resource "aws_vpc" "vpc" {
-  count = var.existing_vpc != null ? 0 : 1
+  count = var.existing_vpc == null && var.vpc_name != "" ? 1 : 0
 
   cidr_block                       = var.vpc_cidr_block
   enable_dns_support               = var.enable_dns_support
@@ -34,8 +41,20 @@ resource "aws_vpc" "vpc" {
 }
 
 ## IGW
+data "aws_internet_gateway" "igw" {
+  count = var.existing_igw == null ? 0 : 1
+
+  internet_gateway_id = lookup(var.existing_igw, "id", null)
+  tags = merge(
+    contains(keys(var.existing_igw), "name") ? {
+      Name = var.existing_igw.name
+    } : {},
+    lookup(var.existing_igw, "tags", {})
+  )
+}
+
 resource "aws_internet_gateway" "igw" {
-  count = var.igw_name == "" ? 0 : 1
+  count = var.existing_igw == null && var.igw_name != "" ? 1 : 0
 
   vpc_id = local.vpc_id
   tags = merge(
@@ -94,7 +113,7 @@ resource "aws_security_group" "secgrp" {
 
 ## Subnets
 resource "aws_subnet" "subnets" {
-  for_each = var.subnets
+  for_each = var.subnets == null ? {} : var.subnets
 
   vpc_id                  = local.vpc_id
   cidr_block              = lookup(each.value, "cidr_block", null)

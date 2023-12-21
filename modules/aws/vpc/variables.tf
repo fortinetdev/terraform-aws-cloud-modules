@@ -81,6 +81,39 @@ variable "igw_name" {
   default     = ""
 }
 
+variable "existing_igw" {
+  description = <<-EOF
+    Using existing IGW. 
+    If the id is specified, will use this IGW ID. Otherwise, will search the IGW based on the given infomation.
+    Options:
+        - id         :  ID of the specific IGW.
+        - name       :  Name of the specific IGW to retrieve.
+        - tags       :  Map of tags, each pair of which must exactly match a pair on the desired IGW.
+        
+    Example:
+    ```
+    existing_igw = {
+        name = "Security_IGW"
+        tags = {
+            \<Option\> = \<Option value\>
+        }
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_igw == null ? true : alltrue([
+      for k, v in var.existing_igw : contains([
+        "id",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: id, name, tags."
+  }
+}
+
 ## Security groups
 variable "security_groups" {
   description = <<-EOF

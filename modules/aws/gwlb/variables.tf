@@ -1,3 +1,88 @@
+## Existing resource
+variable "existing_gwlb" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer. 
+    Options:
+        - arn  :  (Optional|string) Full ARN of the load balancer.
+        - name :  (Optional|string) Unique name of the load balancer.   
+        - tags :  (Optional|map) Mapping of tags, each pair of which must exactly match a pair on the desired load balancer.
+    Example:
+    ```
+    existing_gwlb = {
+        name = "gwlb-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb == null ? true : alltrue([
+      for k, v in var.existing_gwlb : contains([
+        "arn",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: arn, name, tags."
+  }
+}
+
+variable "existing_gwlb_tgp" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer. 
+    Options:
+        - arn  :  (Optional|string) Full ARN of the target group.
+        - name :  (Optional|string) Unique name of the target group.   
+        - tags :  (Optional|map) Mapping of tags, each pair of which must exactly match a pair on the desired target group.
+    Example:
+    ```
+    existing_gwlb_tgp = {
+        name = "gwlb-tgp-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb_tgp == null ? true : alltrue([
+      for k, v in var.existing_gwlb_tgp : contains([
+        "arn",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: arn, name, tags."
+  }
+}
+
+variable "existing_gwlb_ep_service" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer VPC Endpoint Service. 
+    Options:
+        - service_name  :  (Optional|string) Service name that is specified when creating a VPC endpoint.
+        - filter        :  (Optional|map) Configuration block(s) for filtering.   
+        - tags          :  (Optional|map) Map of tags, each pair of which must exactly match a pair on the desired VPC Endpoint Service.
+    Example:
+    ```
+    existing_gwlb_ep_service = {
+        service_name = "gwlb-tgp-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb_ep_service == null ? true : alltrue([
+      for k, v in var.existing_gwlb_ep_service : contains([
+        "service_name",
+        "filter",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: service_name, filter, tags."
+  }
+}
+
 ## Gateway Load Balancer
 variable "gwlb_name" {
   description = "Gateway Load Balancer name"
@@ -150,7 +235,7 @@ variable "gwlb_ln_name" {
 ## Gateway Load Balancer Endpoint
 variable "gwlb_ep_service_name" {
   description = "Gateway Load Balancer Endpoint Service name."
-  default     = "gwlb_endpoint_service"
+  default     = ""
   type        = string
 }
 

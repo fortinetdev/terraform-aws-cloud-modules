@@ -24,6 +24,40 @@ variable "customer_owned_ipv4_pool" {
 }
 
 # Nat Gateway
+variable "existing_ngw" {
+  description = <<-EOF
+    Using existing NAT Gateway. 
+    Options:
+        - id        :  (Optional|string) ID of the specific NAT Gateway to retrieve.
+        - subnet_id :  (Optional|string) ID of subnet that the NAT Gateway resides in.
+        - vpc_id    :  (Optional|string) ID of the VPC that the NAT Gateway resides in.
+        - state     :  (Optional|string) State of the NAT Gateway (pending | failed | available | deleting | deleted ).
+        - filter    :  (Optional|map) Configuration block(s) for filtering.   
+        - tags      :  (Optional|map) Map of tags, each pair of which must exactly match a pair on the desired VPC Endpoint Service.
+    Example:
+    ```
+    existing_ngw = {
+        id = "nat-1234567789"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_ngw == null ? true : alltrue([
+      for k, v in var.existing_ngw : contains([
+        "id",
+        "subnet_id",
+        "vpc_id",
+        "state",
+        "filter",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: id,subnet_id, vpc_id, state, filter, tags."
+  }
+}
+
 variable "allocate_eip" {
   description = "Boolean whether allocate an EIP to the Nat Gateway. Default is true."
   type        = bool

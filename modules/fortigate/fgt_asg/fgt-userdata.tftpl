@@ -4,6 +4,12 @@ config system global
 end
 %{ endif ~}
 
+%{ if fgt_login_port_number != "" ~}
+config system global
+    set admin-sport ${fgt_login_port_number}
+end
+%{ endif ~}
+
 %{ if fgt_multi_vdom ~}
 config system global
     set vdom-mode multi-vdom

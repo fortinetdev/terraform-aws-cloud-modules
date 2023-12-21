@@ -4,8 +4,8 @@ variable "existing_tgw" {
     Using existing Transit gateway. 
     If the id is specified, will use this Transit gateway ID. Otherwise, will search the Transit gateway based on the given infomation.
     Options:
-        - id         :  ID of the specific Transit gateway.
-        - filter     :  Map of the filters. Value should be a list.     
+        - id     :  (Optional|string) ID of the specific Transit gateway.
+        - filter :  (Optional|map) Map of the filters. Value should be a list.     
     Example:
     ```
     existing_tgw = {

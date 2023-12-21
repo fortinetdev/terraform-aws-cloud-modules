@@ -319,6 +319,18 @@ variable "lic_folder_path" {
   default     = null
 }
 
+variable "fortiflex_username" {
+  description = "Username of FortiFlex API user."
+  type        = string
+  default     = null
+}
+
+variable "fortiflex_password" {
+  description = "Password of FortiFlex API user."
+  type        = string
+  default     = null
+}
+
 variable "fortiflex_refresh_token" {
   description = "Refresh token used for FortiFlex."
   type        = string

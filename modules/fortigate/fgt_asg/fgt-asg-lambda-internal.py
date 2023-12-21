@@ -12,7 +12,7 @@ class FgtConf:
         self.logger.setLevel(logging.INFO)
         self.cookie = {}
         self.fgt_password = os.getenv("fgt_password")
-        self.fgt_login_port = ""
+        self.fgt_login_port = "" if os.getenv("fgt_login_port_number") == "" else ":" + os.getenv("fgt_login_port_number")
         self.return_json = {
             'StatusCode': 200,
             'FunctionError': None,
@@ -172,15 +172,13 @@ class FgtConf:
 # using http
     def connect_to_fgt_http(self, check_get=False, max_loop=10):
         self.logger.info("Check connection to FortiGate instance.")
-        fgt_login_port_number = os.getenv("fgt_login_port_number")
         login_succ = False
         encoded_fgt_password = urllib.parse.quote(self.fgt_password)
-        port = ""
         for i in range(max_loop):
-            if i > 0 and port == "":
+            if i > 0:
                 self.logger.info(f"Sleep {i} 30 sec.")
                 time.sleep(30)
-            url = f"https://{self.fgt_private_ip}{port}/logincheck?username=admin&secretkey={encoded_fgt_password}"
+            url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/logincheck?username=admin&secretkey={encoded_fgt_password}"
             header = {
                 "Content-Type": "application/json"
             }
@@ -205,19 +203,14 @@ class FgtConf:
                             if login_succ:
                                 break
                     if login_succ and check_get:
-                        login_succ = self.check_get_http(port)
+                        login_succ = self.check_get_http()
                 else:
                     self.logger.info("Could not get http return status")
                 # response.close()
                 if login_succ:
-                    self.fgt_login_port = port
                     break
             except Exception as err:
                 self.logger.info(f"Could not get http return status, try again. Error: {err}")
-            if port == "" and fgt_login_port_number != "":
-                port = ":" + fgt_login_port_number
-            else:
-                port = ""
         return login_succ
 
     def change_password(self, fgt_vm_id):
@@ -227,7 +220,7 @@ class FgtConf:
         session_key = ""
         max_loop = 10
         for i in range(max_loop):
-            url = f"https://{self.fgt_private_ip}/api/v2/authentication"
+            url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
             header = {
                 "Content-Type": "application/json"
             }
@@ -268,7 +261,7 @@ class FgtConf:
             time.sleep(30)
         if b_succ:
             # Logout
-            url = f"https://{self.fgt_private_ip}/api/v2/authentication"
+            url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
             header = {
                 "Content-Type": "application/json"
             }
@@ -283,9 +276,9 @@ class FgtConf:
         
         return b_succ
 
-    def check_get_http(self, port=""):
+    def check_get_http(self):
         self.logger.info("Check get system status.")
-        url = f"https://{self.fgt_private_ip}{port}/api/v2/monitor/system/status"
+        url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/monitor/system/status"
         header = {
             "Content-Type": "application/json",
             "Cookie": self.cookie["cookie"],

@@ -5,12 +5,15 @@ output "vpc_id" {
 output "subnets" {
   value = {
     for subnet in aws_subnet.subnets :
-    subnet.tags.Name => subnet.id
+    subnet.tags.Name => {
+      "id"                = subnet.id
+      "availability_zone" = subnet.availability_zone
+    }
   }
 }
 
 output "igw" {
-  value = aws_internet_gateway.igw[0].id
+  value = local.igw
 }
 
 output "security_group" {

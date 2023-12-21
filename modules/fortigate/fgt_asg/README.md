@@ -66,8 +66,10 @@ No modules.
 | <a name="input_fgt_system_autoscale_psksecret"></a> [fgt\_system\_autoscale\_psksecret](#input\_fgt\_system\_autoscale\_psksecret) | FotiGate system auto-scale psksecret. | `string` | `""` | no |
 | <a name="input_fgt_version"></a> [fgt\_version](#input\_fgt\_version) | Provide the FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version. Default is 7.2. | `string` | `"7.2"` | no |
 | <a name="input_fortiflex_configid_list"></a> [fortiflex\_configid\_list](#input\_fortiflex\_configid\_list) | Config ID list from FortiFlex account that used to activate FortiGate instance. | `list` | `[]` | no |
+| <a name="input_fortiflex_password"></a> [fortiflex\_password](#input\_fortiflex\_password) | Password of FortiFlex API user. | `string` | `null` | no |
 | <a name="input_fortiflex_refresh_token"></a> [fortiflex\_refresh\_token](#input\_fortiflex\_refresh\_token) | Refresh token used for FortiFlex. | `string` | `null` | no |
 | <a name="input_fortiflex_sn_list"></a> [fortiflex\_sn\_list](#input\_fortiflex\_sn\_list) | Serial number list from FortiFlex account that used to activate FortiGate instance. | `list` | `[]` | no |
+| <a name="input_fortiflex_username"></a> [fortiflex\_username](#input\_fortiflex\_username) | Username of FortiFlex API user. | `string` | `null` | no |
 | <a name="input_gwlb_ips"></a> [gwlb\_ips](#input\_gwlb\_ips) | Gateway Load Balancer IPs that used for FortiGate configuration.<br>Format:<pre>gwlb_ips = {<br>        \<Subnet_id\> = \<IP\><br>  }</pre>Example:<pre>gwlb_ips = {<br>  subnet-12345678 = 10.0.0.47<br>}</pre> | `map(string)` | `{}` | no |
 | <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Provide the instance type for the FortiGate instances | `string` | `"c5.xlarge"` | no |
 | <a name="input_keypire_name"></a> [keypire\_name](#input\_keypire\_name) | The keypair name that used in FortiGate EC2 instance. | `string` | n/a | yes |

@@ -14,10 +14,11 @@ data "aws_ami" "fgt_ami" {
 
 locals {
   vars = {
-    fgt_hostname       = var.fgt_hostname
-    fgt_password       = var.fgt_password
-    fgt_multi_vdom     = var.fgt_multi_vdom
-    network_interfaces = var.network_interfaces
+    fgt_hostname          = var.fgt_hostname
+    fgt_password          = var.fgt_password
+    fgt_multi_vdom        = var.fgt_multi_vdom
+    network_interfaces    = var.network_interfaces
+    fgt_login_port_number = var.fgt_login_port_number
   }
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
 }
@@ -350,6 +351,8 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       dynamodb_table_name            = var.dynamodb_table_name
       enable_fgt_system_autoscale    = var.enable_fgt_system_autoscale
       fgt_system_autoscale_psksecret = var.fgt_system_autoscale_psksecret
+      fortiflex_username             = var.fortiflex_username
+      fortiflex_password             = var.fortiflex_password
       fortiflex_refresh_token        = var.fortiflex_refresh_token
       fortiflex_sn_list              = jsonencode(var.fortiflex_sn_list)
       fortiflex_configid_list        = jsonencode(var.fortiflex_configid_list)

@@ -2,11 +2,13 @@
 variable "access_key" {
   description = "The Access Key of AWS account."
   type        = string
+  default     = ""
 }
 
 variable "secret_key" {
   description = "The Secret Key of AWS account."
   type        = string
+  default     = ""
 }
 
 variable "region" {
@@ -18,6 +20,7 @@ variable "region" {
 variable "general_tags" {
   description = "The tags that will apply to all resouces."
   type        = map(string)
+  default     = {}
 }
 
 ## VPC
@@ -65,6 +68,39 @@ variable "existing_security_vpc" {
       ], k)
     ])
     error_message = "One or more argument(s) can not be identified, available options: cidr_block, id, name, tags."
+  }
+}
+
+variable "existing_igw" {
+  description = <<-EOF
+    Using existing IGW. 
+    If the id is specified, will use this IGW ID. Otherwise, will search the IGW based on the given infomation.
+    Options:
+        - id         :  ID of the specific IGW.
+        - name       :  Name of the specific IGW to retrieve.
+        - tags       :  Map of tags, each pair of which must exactly match a pair on the desired IGW.
+        
+    Example:
+    ```
+    existing_igw = {
+        name = "Security_IGW"
+        tags = {
+            \<Option\> = \<Option value\>
+        }
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_igw == null ? true : alltrue([
+      for k, v in var.existing_igw : contains([
+        "id",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: id, name, tags."
   }
 }
 
@@ -184,16 +220,24 @@ variable "availability_zones" {
 variable "spoke_cidr_list" {
   description = "The IPv4 CIDR block list for the spoke VPCs."
   type        = list(string)
+  default     = []
 }
 
 variable "vpc_cidr_block" {
   description = "The IPv4 CIDR block for the VPC."
   type        = string
+  default     = ""
+}
+
+variable "subnet_cidr_block" {
+  description = "The IPv4 CIDR block for the auto-create subnets of VPC."
+  type        = string
+  default     = ""
   validation {
-    condition     = tonumber(element(split("/", var.vpc_cidr_block), 1)) <= 24
+    condition     = tonumber(element(split("/", var.subnet_cidr_block), 1) == "" ? "0" : element(split("/", var.subnet_cidr_block), 1)) <= 24
     error_message = <<-EOF
-    Auto set subnet do not support netmask larger then 24. Current netmask is "${tonumber(element(split("/", var.vpc_cidr_block), 1))}". Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
-    The format should be 4 subnets for each AZ, and the name prefix should be \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\".
+    Auto set subnet do not support netmask larger then 24. Current netmask is "${tonumber(element(split("/", var.subnet_cidr_block), 1) == "" ? "99" : element(split("/", var.subnet_cidr_block), 1))}". Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
+    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\". Specify the target subnet you needed.
     Here is an example:
     ```
       subnets = {
@@ -238,6 +282,7 @@ variable "vpc_cidr_block" {
 variable "subnets" {
   description = <<-EOF
         Subnets configuration for the target VPC.
+        The format of subnet name should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\". Specify the target subnet you needed.
         Format:
         ```
             subnets = {
@@ -253,7 +298,7 @@ variable "subnets" {
         Example:
         ```
         subnets = {
-            fgt_asg = {
+            fgt_login_asg = {
                 cidr_block = "10.0.1.0/24"
                 availability_zone = "us-west-2a"
             }
@@ -261,7 +306,7 @@ variable "subnets" {
         ```    
     EOF
   type        = any
-  default     = {}
+  default     = null
   validation {
     condition = var.subnets == null ? true : alltrue([
       for k, v in var.subnets : alltrue([
@@ -273,6 +318,74 @@ variable "subnets" {
       ])
     ])
     error_message = "One or more argument(s) can not be identified, available options: cidr_block, availability_zone, map_public_ip_on_launch."
+  }
+}
+
+variable "existing_subnets" {
+  description = <<-EOF
+    Using existing subnets. 
+    Name format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\".
+    Options:
+        - id                      :  (Optional|required) Subnet ID.
+        - availability_zone       :  (Optional|required) AZ for the subnet.
+        
+    Example:
+    ```
+    existing_subnets = {
+      "fgt_login_us-east-2a" = {
+        id                = "subnet-123456789"
+        availability_zone = "us-east-2a"
+      }
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_subnets == null ? true : alltrue([
+      for k, v in var.existing_subnets : alltrue([
+        for sk, sv in v : contains([
+          "id",
+          "availability_zone"
+        ], sk)
+      ])
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: id, availability_zone."
+  }
+}
+
+## NAT Gateways
+variable "existing_ngw" {
+  description = <<-EOF
+    Using existing NAT Gateway. 
+    Options:
+        - id        :  (Optional|string) ID of the specific NAT Gateway to retrieve.
+        - subnet_id :  (Optional|string) ID of subnet that the NAT Gateway resides in.
+        - vpc_id    :  (Optional|string) ID of the VPC that the NAT Gateway resides in.
+        - state     :  (Optional|string) State of the NAT Gateway (pending | failed | available | deleting | deleted ).
+        - filter    :  (Optional|map) Configuration block(s) for filtering.   
+        - tags      :  (Optional|map) Map of tags, each pair of which must exactly match a pair on the desired VPC Endpoint Service.
+    Example:
+    ```
+    existing_ngw = {
+        id = "nat-1234567789"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_ngw == null ? true : alltrue([
+      for k, v in var.existing_ngw : contains([
+        "id",
+        "subnet_id",
+        "vpc_id",
+        "state",
+        "filter",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: id,subnet_id, vpc_id, state, filter, tags."
   }
 }
 
@@ -309,6 +422,7 @@ variable "existing_tgw" {
 variable "tgw_name" {
   description = "Transit gateway name"
   type        = string
+  default     = ""
 }
 
 variable "tgw_description" {
@@ -344,19 +458,18 @@ variable "security_vpc_tgw_attachments" {
   default     = {}
   validation {
     condition = length(var.security_vpc_tgw_attachments) == 0 ? true : alltrue([
-      for k, v in var.security_vpc_tgw_attachments : alltrue([
-        for sk, sv in v : contains([
-          "appliance_mode_support",
-          "dns_support",
-          "ipv6_support",
-          "transit_gateway_default_route_table_association",
-          "transit_gateway_default_route_table_propagation"
-        ], sk)
-      ])
+      for k, v in var.security_vpc_tgw_attachments : contains([
+        "appliance_mode_support",
+        "dns_support",
+        "ipv6_support",
+        "transit_gateway_default_route_table_association",
+        "transit_gateway_default_route_table_propagation"
+      ], k)
     ])
     error_message = "One or more argument(s) can not be identified, available options: appliance_mode_support, dns_support, ipv6_support, transit_gateway_default_route_table_association, transit_gateway_default_route_table_propagation."
   }
 }
+
 
 ## Auto scale group
 variable "asgs" {
@@ -382,6 +495,8 @@ variable "asgs" {
     - lic_folder_path : (Optional|string) Folder path of FortiGate license files.
     - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files or token json file.
     - fortiflex_refresh_token : (Optional|string) Refresh token used for FortiFlex.
+    - fortiflex_username : (Optional|string) Username of FortiFlex API user.
+    - fortiflex_password : (Optional|string) Password of FortiFlex API user.
     - fortiflex_sn_list : (Optional|list) Serial number list from FortiFlex account that used to activate FortiGate instance.
     - fortiflex_configid_list : (Optional|list) Config ID list from FortiFlex account that used to activate FortiGate instance.
     - keypair_name : (Required|string) The keypair name for accessing the FortiGate instances.
@@ -456,6 +571,7 @@ variable "asgs" {
   ```
   EOF
   type        = any
+  default     = {}
 }
 
 variable "fgt_intf_mode" {
@@ -562,6 +678,96 @@ variable "enable_cross_zone_load_balancing" {
   description = "If true, cross-zone load balancing of the load balancer will be enabled."
   type        = bool
   default     = null
+}
+
+variable "gwlb_ep_service_name" {
+  description = "Gateway Load Balancer Endpoint Service name."
+  default     = "gwlb_endpoint_service"
+  type        = string
+}
+
+variable "existing_gwlb" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer. 
+    Options:
+        - arn  :  (Optional|string) Full ARN of the load balancer.
+        - name :  (Optional|string) Unique name of the load balancer.   
+        - tags :  (Optional|map) Mapping of tags, each pair of which must exactly match a pair on the desired load balancer.
+    Example:
+    ```
+    existing_gwlb = {
+        name = "gwlb-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb == null ? true : alltrue([
+      for k, v in var.existing_gwlb : contains([
+        "arn",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: arn, name, tags."
+  }
+}
+
+variable "existing_gwlb_tgp" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer. 
+    Options:
+        - arn  :  (Optional|string) Full ARN of the target group.
+        - name :  (Optional|string) Unique name of the target group.   
+        - tags :  (Optional|map) Mapping of tags, each pair of which must exactly match a pair on the desired target group.
+    Example:
+    ```
+    existing_gwlb_tgp = {
+        name = "gwlb-tgp-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb_tgp == null ? true : alltrue([
+      for k, v in var.existing_gwlb_tgp : contains([
+        "arn",
+        "name",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: arn, name, tags."
+  }
+}
+
+variable "existing_gwlb_ep_service" {
+  description = <<-EOF
+    Using existing Gateway Load Balancer VPC Endpoint Service. 
+    Options:
+        - service_name  :  (Optional|string) Service name that is specified when creating a VPC endpoint.
+        - filter        :  (Optional|map) Configuration block(s) for filtering.   
+        - tags          :  (Optional|map) Map of tags, each pair of which must exactly match a pair on the desired VPC Endpoint Service.
+    Example:
+    ```
+    existing_gwlb_ep_service = {
+        service_name = "gwlb-tgp-fgt"
+    }
+    ```
+    EOF
+  type        = any
+  default     = null
+  validation {
+    condition = var.existing_gwlb_ep_service == null ? true : alltrue([
+      for k, v in var.existing_gwlb_ep_service : contains([
+        "service_name",
+        "filter",
+        "tags"
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: service_name, filter, tags."
+  }
 }
 
 ## Spoke VPC

@@ -1,9 +1,9 @@
 output "gwlb" {
-  value = aws_lb.gwlb
+  value = local.gwlb
 }
 
 output "gwlb_tgp" {
-  value = aws_lb_target_group.gwlb_tgp
+  value = local.gwlb_tgp
 }
 
 output "gwlb_ips" {

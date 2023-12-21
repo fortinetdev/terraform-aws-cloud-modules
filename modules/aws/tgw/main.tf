@@ -1,11 +1,19 @@
+## Variable with prefix 'existing_' is null means no related existing resource, then will check related name/id and create new one if configured;
+## Variable with prefix 'existing_' is not null means have related existing resource, then if no content means ignore the resource, if has content means use the existing resource.
 locals {
-  tgw    = var.existing_tgw == null ? aws_ec2_transit_gateway.tgw[0] : length(var.existing_tgw) == 0 ? aws_ec2_transit_gateway.tgw[0] : data.aws_ec2_transit_gateway.tgw[0]
-  tgw_id = local.tgw.id
+  tgw    = var.existing_tgw == null ? (var.tgw_name == "" ? null : aws_ec2_transit_gateway.tgw[0]) : length(coalesce(var.existing_tgw, {})) == 0 ? null : data.aws_ec2_transit_gateway.tgw[0]
+  tgw_id = local.tgw == null ? null : local.tgw.id
+}
+
+resource "null_resource" "validation_check_tgw" {
+  count = local.tgw == null && length(var.tgw_attachments) > 0 ? (
+    "ERROR: Either existing_tgw or tgw_name needs to be provided if you want to create TGW attachments."
+  ) : 0
 }
 
 ## Transit gateway
 data "aws_ec2_transit_gateway" "tgw" {
-  count = var.existing_tgw == null ? 0 : length(var.existing_tgw) == 0 ? 0 : 1
+  count = var.existing_tgw != null && length(coalesce(var.existing_tgw, {})) > 0 ? 1 : 0
 
   id = lookup(var.existing_tgw, "id", null)
   dynamic "filter" {
@@ -18,7 +26,7 @@ data "aws_ec2_transit_gateway" "tgw" {
 }
 
 resource "aws_ec2_transit_gateway" "tgw" {
-  count = var.existing_tgw == null ? 1 : length(var.existing_tgw) == 0 ? 1 : 0
+  count = var.existing_tgw == null && var.tgw_name != "" ? 1 : 0
 
   amazon_side_asn                 = var.amazon_side_asn
   auto_accept_shared_attachments  = var.auto_accept_shared_attachments
@@ -38,7 +46,7 @@ resource "aws_ec2_transit_gateway" "tgw" {
 
 ## Transit gateway VPC attachment
 resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attachments" {
-  for_each = var.tgw_attachments
+  for_each = local.tgw == null ? {} : var.tgw_attachments
 
   subnet_ids                                      = each.value.subnet_ids
   transit_gateway_id                              = local.tgw_id

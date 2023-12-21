@@ -5,50 +5,71 @@ provider "aws" {
 }
 
 locals {
-  base_ip              = split(".", element(split("/", var.vpc_cidr_block), 0))
-  base_netmask         = tonumber(element(split("/", var.vpc_cidr_block), 1))
-  step_num             = local.base_netmask <= 19 ? 1 : 16
-  subnet_netmask       = local.step_num == 1 ? 24 : 28
-  subnet_prefixs       = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", "tgw_attachment_", "gwlbe_"] : ["fgt_login_", "fgt_internal_", "tgw_attachment_", "gwlbe_"]
   internal_port_prefix = var.fgt_intf_mode == "1-arm" ? "fgt_login_" : "fgt_internal_"
-  subnets = var.subnets != {} ? var.subnets : merge([for az_i in range(length(var.availability_zones)) : merge([
-    for sn_i in range(length(local.subnet_prefixs)) : {
-      "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
-        cidr_block        = "${local.base_ip[0]}.${local.base_ip[1]}.%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}.%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
-        availability_zone = "${var.availability_zones[az_i]}"
-      }
-    }
+  # Auto generate subnets
+  subnet_cidr_block = var.subnet_cidr_block == "" ? var.vpc_cidr_block : var.subnet_cidr_block
+  cidr_split        = split("/", local.subnet_cidr_block)
+  base_ip           = split(".", element(local.cidr_split, 0))
+  base_netmask      = element(local.cidr_split, 1) == "" ? 99 : tonumber(element(local.cidr_split, 1))
+
+  step_num           = local.base_netmask <= 19 ? 1 : 16
+  subnet_netmask     = local.step_num == 1 ? 24 : 28
+  subnet_prefix_fgt  = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
+  subnet_prefix_gwlb = var.existing_gwlb != null && length(coalesce(var.existing_gwlb, {})) == 0 ? [""] : ["gwlbe_"]
+  subnet_prefix_tgw  = var.existing_tgw != null && length(coalesce(var.existing_tgw, {})) == 0 ? [""] : ["tgw_attachment_"]
+  subnet_prefixs     = concat(local.subnet_prefix_fgt, local.subnet_prefix_gwlb, local.subnet_prefix_tgw)
+  create_subnets = var.existing_subnets != null ? {} : (var.subnets != null && var.subnets != {}) ? var.subnets : local.base_netmask > 24 ? {} : merge([
+    for az_i in range(length(var.availability_zones)) : merge([
+      for sn_i in range(length(local.subnet_prefixs)) : {
+        "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
+          cidr_block        = "${local.base_ip[0]}.${local.base_ip[1]}.%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}.%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
+          availability_zone = "${var.availability_zones[az_i]}"
+        }
+      } if local.subnet_prefixs[sn_i] != ""
     ]...)
   ]...)
+
+  # Subnets
+  subnets = var.existing_subnets != null ? var.existing_subnets : module.security-vpc.subnets
+
+  # Route tables
   route_tables = {
-    "secvpc" = merge({
-      fgt_login = {
-        routes = {
-          local_pc = {
-            destination_cidr_block = "0.0.0.0/0"
-            gateway_id             = module.security-vpc.igw
-          }
-        },
-        rt_association_subnets = [for k, v in module.security-vpc.subnets : v if startswith(k, "fgt_login_")]
+    "secvpc" = merge(
+      (module.security-vpc.igw == null ||
+        length([for k, v in local.create_subnets : k if startswith(k, "fgt_login_")]) == 0) ? {} : {
+        fgt_login = {
+          routes = {
+            local_pc = {
+              destination_cidr_block = "0.0.0.0/0"
+              gateway_id             = module.security-vpc.igw.id
+            }
+          },
+          rt_association_subnets = [for k, v in local.create_subnets : local.subnets[k]["id"] if startswith(k, "fgt_login_")]
+        }
       },
-      gwlbe = {
-        routes = {
-          for spk_cidr in var.spoke_cidr_list : "to_${spk_cidr}" => {
-            destination_cidr_block = spk_cidr
-            transit_gateway_id     = module.transit-gw.tgw.id
-          }
-        },
-        rt_association_subnets = [for k, v in module.security-vpc.subnets : v if startswith(k, "gwlbe_")]
-      }
+      (module.transit-gw.tgw == null ||
+        length([for k, v in local.subnets : k if startswith(k, "gwlbe_")]) == 0) ? {} : {
+        gwlbe = {
+          routes = {
+            for spk_cidr in var.spoke_cidr_list : "to_${spk_cidr}" => {
+              destination_cidr_block = spk_cidr
+              transit_gateway_id     = module.transit-gw.tgw.id
+            }
+          },
+          rt_association_subnets = [for k, v in local.subnets : v["id"] if startswith(k, "gwlbe_")]
+        }
       },
-      { for az in var.availability_zones : "tgw_attachment_${az}" => {
-        routes = {
-          to_gwlb = {
-            destination_cidr_block = "0.0.0.0/0"
-            vpc_endpoint_id        = [for k, v in local.subnets : module.security-vpc-gwlb.gwlb_endps[k] if startswith(k, "gwlbe_") && v["availability_zone"] == az][0]
-          }
-        },
-        rt_association_subnets = [for k, v in local.subnets : module.security-vpc.subnets[k] if startswith(k, "tgw_attachment_") && v["availability_zone"] == az]
+      (module.security-vpc-gwlb.gwlb_endps == null ||
+        length([for k, v in local.subnets : k if startswith(k, "tgw_attachment_")]) == 0 ||
+        length([for k, v in local.subnets : k if startswith(k, "gwlbe_")]) == 0) ? {} : {
+        for az in var.availability_zones : "tgw_attachment_${az}" => {
+          routes = {
+            to_gwlb = {
+              destination_cidr_block = "0.0.0.0/0"
+              vpc_endpoint_id        = [for k, v in local.subnets : module.security-vpc-gwlb.gwlb_endps[k] if startswith(k, "gwlbe_") && v["availability_zone"] == az][0]
+            }
+          },
+          rt_association_subnets = [for k, v in local.subnets : v["id"] if startswith(k, "tgw_attachment_") && v["availability_zone"] == az]
         }
       }
     )
@@ -59,16 +80,26 @@ locals {
   }
 }
 
+resource "null_resource" "validation_check_subnet_cidr" {
+  count = var.existing_subnets == null && var.subnets == null && local.subnet_cidr_block != "" && local.base_netmask > 24 ? (
+    <<EOT
+    "Auto set subnet do not support netmask larger then 24. Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
+    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\". Specify the target subnet you needed." 
+  EOT
+  ) : 0
+}
+
 # Create security VPC including subnets, IGW, and security groups
 module "security-vpc" {
   source = "../../modules/aws/vpc"
 
   existing_vpc    = var.existing_security_vpc
+  existing_igw    = var.existing_igw
   vpc_name        = var.vpc_name
   igw_name        = var.igw_name
   security_groups = var.security_groups
   vpc_cidr_block  = var.vpc_cidr_block
-  subnets         = local.subnets
+  subnets         = local.create_subnets
 
   tags = {
     general = var.general_tags
@@ -101,10 +132,10 @@ module "transit-gw" {
   tgw_description                 = var.tgw_description
   default_route_table_association = "disable"
   default_route_table_propagation = "disable"
-  tgw_attachments = {
+  tgw_attachments = length([for k, v in local.subnets : v["id"] if startswith(k, "tgw_attachment_")]) == 0 ? {} : {
     security_vpc = merge(
       {
-        subnet_ids                                      = [for k, v in module.security-vpc.subnets : v if startswith(k, "tgw_attachment_")]
+        subnet_ids                                      = [for k, v in local.subnets : v["id"] if startswith(k, "tgw_attachment_")]
         vpc_id                                          = module.security-vpc.vpc_id
         appliance_mode_support                          = "enable"
         transit_gateway_default_route_table_association = false
@@ -124,6 +155,7 @@ module "transit-gw" {
 ## Add tgw route table to security VPC
 module "tgw_rt_spokevpc" {
   source = "../../modules/aws/tgw_route_table"
+  count  = module.transit-gw.tgw == null ? 0 : length(module.transit-gw.tgw_attachments) == 0 ? 0 : 1
 
   tgw_id      = module.transit-gw.tgw.id
   tgw_rt_name = "tgw_rt_spokevpc"
@@ -145,6 +177,7 @@ module "tgw_rt_spokevpc" {
 ## Create tgw route table associate with security VPC TGW attachment
 module "tgw_rt_secvpc" {
   source = "../../modules/aws/tgw_route_table"
+  count  = module.transit-gw.tgw == null ? 0 : length(module.transit-gw.tgw_attachments) == 0 ? 0 : 1
 
   tgw_id      = module.transit-gw.tgw.id
   tgw_rt_name = "tgw_rt_secvpc"
@@ -170,7 +203,7 @@ module "fgt_asg" {
   # FortiGate instance template
   template_name                  = lookup(each.value, "template_name", "")
   fgt_version                    = each.value.fgt_version
-  instance_type                  = lookup(each.value, "instance_type", "c5.xlarge")
+  instance_type                  = lookup(each.value, "instance_type", "c5n.xlarge")
   license_type                   = lookup(each.value, "license_type", "on_demand")
   fgt_hostname                   = lookup(each.value, "fgt_hostname", "")
   fgt_password                   = each.value.fgt_password
@@ -178,6 +211,8 @@ module "fgt_asg" {
   lic_folder_path                = lookup(each.value, "lic_folder_path", null)
   lic_s3_name                    = lookup(each.value, "lic_s3_name", null)
   fortiflex_refresh_token        = lookup(each.value, "fortiflex_refresh_token", "")
+  fortiflex_username             = lookup(each.value, "fortiflex_username", "")
+  fortiflex_password             = lookup(each.value, "fortiflex_password", "")
   fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", [])
   fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", [])
   keypire_name                   = each.value.keypair_name
@@ -205,7 +240,7 @@ module "fgt_asg" {
     var.fgt_intf_mode == "1-arm" ? jsonencode({
       mgmt = {
         device_index      = 0
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
         enable_public_ip  = true
         to_gwlb           = true
         source_dest_check = true
@@ -214,7 +249,7 @@ module "fgt_asg" {
       }) : jsonencode({
       mgmt = {
         device_index      = 1
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
         enable_public_ip  = true
         source_dest_check = true
         security_groups   = [module.security-vpc.security_group[each.value.intf_security_group["login_port"]]]
@@ -222,7 +257,7 @@ module "fgt_asg" {
       internal_traffic = {
         device_index    = 0
         to_gwlb         = true
-        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_internal_") }
+        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_internal_") }
         security_groups = [module.security-vpc.security_group[each.value.intf_security_group["internal_port"]]]
       }
     })
@@ -231,7 +266,7 @@ module "fgt_asg" {
   create_geneve_for_all_az = var.enable_cross_zone_load_balancing
   gwlb_ips                 = module.security-vpc-gwlb.gwlb_ips
   asg_health_check_type    = "ELB"
-  asg_gwlb_tgp             = [module.security-vpc-gwlb.gwlb_tgp.arn]
+  asg_gwlb_tgp             = module.security-vpc-gwlb.gwlb_tgp == null ? null : [module.security-vpc-gwlb.gwlb_tgp.arn]
   lambda_timeout           = 500
   az_name_map              = local.az_name_map
   tags = {
@@ -285,8 +320,11 @@ resource "aws_cloudwatch_metric_alarm" "hybrid_asg" {
 module "security-vpc-gwlb" {
   source = "../../modules/aws/gwlb"
 
+  existing_gwlb                    = var.existing_gwlb
+  existing_gwlb_tgp                = var.existing_gwlb_tgp
+  existing_gwlb_ep_service         = var.existing_gwlb_ep_service
   gwlb_name                        = var.gwlb_name
-  subnets                          = [for k, v in module.security-vpc.subnets : v if startswith(k, local.internal_port_prefix)]
+  subnets                          = [for k, v in local.subnets : v["id"] if startswith(k, local.internal_port_prefix)]
   tgp_name                         = var.tgp_name
   deregistration_delay             = 30
   enable_cross_zone_load_balancing = var.enable_cross_zone_load_balancing
@@ -294,11 +332,12 @@ module "security-vpc-gwlb" {
     port     = 80
     protocol = "TCP"
   }
-  vpc_id       = module.security-vpc.vpc_id
-  gwlb_ln_name = "gwlb-ln"
-  gwlb_endps = { for k, v in module.security-vpc.subnets : k => {
+  vpc_id               = module.security-vpc.vpc_id
+  gwlb_ln_name         = "gwlb-ln"
+  gwlb_ep_service_name = var.gwlb_ep_service_name
+  gwlb_endps = { for k, v in local.subnets : k => {
     vpc_id    = module.security-vpc.vpc_id
-    subnet_id = v
+    subnet_id = v["id"]
     } if startswith(k, "gwlbe_")
   }
   tags = {
@@ -313,7 +352,7 @@ module "security-vpc-gwlb" {
 module "spoke_vpc_tgw_attachment" {
   source = "../../modules/aws/tgw"
 
-  for_each = var.spk_vpc
+  for_each = module.transit-gw.tgw == null ? {} : var.spk_vpc
   existing_tgw = {
     id = module.transit-gw.tgw.id
   }
@@ -336,9 +375,10 @@ module "spoke_vpc_tgw_attachment" {
 ## Associate Spoke VPC TGW Attachment to Spoke TGW Route Table
 module "associate_spk_to_tgwrt" {
   source = "../../modules/aws/tgw_route_table"
+  count  = length(module.spoke_vpc_tgw_attachment) > 0 && length(module.tgw_rt_spokevpc) > 0 ? 1 : 0
 
   existing_tgw_rt = {
-    id = module.tgw_rt_spokevpc.tgw_rt_id
+    id = module.tgw_rt_spokevpc[0].tgw_rt_id
   }
   tgw_id              = module.transit-gw.tgw.id
   tgw_rt_associations = concat([for r in module.spoke_vpc_tgw_attachment : values(r.tgw_attachments)]...)
@@ -355,9 +395,10 @@ module "associate_spk_to_tgwrt" {
 ## Propagate Spoke VPC TGW Attachment to Security TGW Route Table
 module "propagate_spk_to_tgwrt" {
   source = "../../modules/aws/tgw_route_table"
+  count  = length(module.spoke_vpc_tgw_attachment) > 0 && length(module.tgw_rt_secvpc) > 0 ? 1 : 0
 
   existing_tgw_rt = {
-    id = module.tgw_rt_secvpc.tgw_rt_id
+    id = module.tgw_rt_secvpc[0].tgw_rt_id
   }
   tgw_id              = module.transit-gw.tgw.id
   tgw_rt_propagations = concat([for r in module.spoke_vpc_tgw_attachment : values(r.tgw_attachments)]...)
@@ -374,7 +415,7 @@ module "propagate_spk_to_tgwrt" {
 module "spkvpc-rt" {
   source = "../../modules/aws/vpc_route_table"
 
-  for_each = var.spk_vpc
+  for_each = module.transit-gw.tgw == null ? {} : var.spk_vpc
   vpc_id   = each.value["vpc_id"]
   rt_name  = lookup(each.value, "route_table_name", "spkvpc-to-tgwa-${each.key}")
   routes = {

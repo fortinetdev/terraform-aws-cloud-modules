@@ -9,6 +9,7 @@
 | Name | Version |
 |------|---------|
 | <a name="provider_aws"></a> [aws](#provider\_aws) | n/a |
+| <a name="provider_null"></a> [null](#provider\_null) | n/a |
 
 ## Modules
 
@@ -22,6 +23,8 @@ No modules.
 | [aws_security_group.secgrp](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
 | [aws_subnet.subnets](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/subnet) | resource |
 | [aws_vpc.vpc](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc) | resource |
+| [null_resource.validation_check_vpc](https://registry.terraform.io/providers/hashicorp/null/latest/docs/resources/resource) | resource |
+| [aws_internet_gateway.igw](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/internet_gateway) | data source |
 | [aws_vpc.vpc](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/vpc) | data source |
 
 ## Inputs
@@ -31,6 +34,7 @@ No modules.
 | <a name="input_assign_generated_ipv6_cidr_block"></a> [assign\_generated\_ipv6\_cidr\_block](#input\_assign\_generated\_ipv6\_cidr\_block) | Requests an Amazon-provided IPv6 CIDR block with a /56 prefix length for the VPC. You cannot specify the range of IP addresses, or the size of the CIDR block. Default is false. | `bool` | `false` | no |
 | <a name="input_enable_dns_hostnames"></a> [enable\_dns\_hostnames](#input\_enable\_dns\_hostnames) | A boolean flag to enable/disable DNS hostnames in the VPC. Defaults false. | `bool` | `false` | no |
 | <a name="input_enable_dns_support"></a> [enable\_dns\_support](#input\_enable\_dns\_support) | A boolean flag to enable/disable DNS support in the VPC. Defaults to true. | `bool` | `true` | no |
+| <a name="input_existing_igw"></a> [existing\_igw](#input\_existing\_igw) | Using existing IGW. <br>If the id is specified, will use this IGW ID. Otherwise, will search the IGW based on the given infomation.<br>Options:<br>    - id         :  ID of the specific IGW.<br>    - name       :  Name of the specific IGW to retrieve.<br>    - tags       :  Map of tags, each pair of which must exactly match a pair on the desired IGW.<br>    <br>Example:<pre>existing_igw = {<br>    name = "Security_IGW"<br>    tags = {<br>        \<Option\> = \<Option value\><br>    }<br>}</pre> | `any` | `null` | no |
 | <a name="input_existing_vpc"></a> [existing\_vpc](#input\_existing\_vpc) | Using existing VPC. <br>If the id is specified, will use this VPC ID. Otherwise, will search the VPC based on the given infomation.<br>Options:<br>    - cidr\_block :  Cidr block of the desired VPC.<br>    - id         :  ID of the specific VPC.<br>    - name       :  Name of the specific VPC to retrieve.<br>    - tags       :  Map of tags, each pair of which must exactly match a pair on the desired VPC.<br>    <br>Example:<pre>existing_vpc = {<br>    name = "Security_VPC"<br>    tags = {<br>        \<Option\> = \<Option value\><br>    }<br>}</pre> | `any` | `null` | no |
 | <a name="input_igw_name"></a> [igw\_name](#input\_igw\_name) | Internet Gateway name. Default empty string, which means do not create IGW. | `string` | `""` | no |
 | <a name="input_instance_tenancy"></a> [instance\_tenancy](#input\_instance\_tenancy) | A tenancy option for instances launched into the VPC. <br>Default is default, which ensures that EC2 instances launched in this VPC use the EC2 instance tenancy attribute specified when the EC2 instance is launched. <br>The only other option is dedicated, which ensures that EC2 instances launched in this VPC are run on dedicated tenancy instances regardless of the tenancy attribute specified at launch. <br>This has a dedicated per region fee of $2 per hour, plus an hourly per instance usage fee. | `string` | `"default"` | no |

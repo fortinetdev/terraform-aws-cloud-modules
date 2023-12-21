@@ -6,32 +6,40 @@ provider "aws" {
 
 locals {
   # Security VPC subnets
-  base_ip              = split(".", element(split("/", var.vpc_cidr_block), 0))
-  base_netmask         = tonumber(element(split("/", var.vpc_cidr_block), 1))
+  subnet_cidr_block    = var.subnet_cidr_block == "" ? var.vpc_cidr_block : var.subnet_cidr_block
+  cidr_split           = split("/", local.subnet_cidr_block)
+  base_ip              = split(".", element(local.cidr_split, 0))
+  base_netmask         = element(local.cidr_split, 1) == "" ? 99 : tonumber(element(local.cidr_split, 1))
   step_num             = local.base_netmask <= 19 ? 1 : 16
   subnet_netmask       = local.step_num == 1 ? 24 : 28
-  subnet_prefixs       = var.fgt_intf_mode == "1-arm" ? ["fgt_login_"] : ["fgt_login_", "fgt_internal_"]
+  subnet_prefixs       = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
   internal_port_prefix = var.fgt_intf_mode == "1-arm" ? "fgt_login_" : "fgt_internal_"
-  subnets = var.subnets != {} ? var.subnets : merge([for az_i in range(length(var.availability_zones)) : merge([
-    for sn_i in range(length(local.subnet_prefixs)) : {
-      "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
-        cidr_block        = "${local.base_ip[0]}.${local.base_ip[1]}.%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}.%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
-        availability_zone = "${var.availability_zones[az_i]}"
-      }
-    }
+  create_subnets = var.existing_subnets != null ? {} : (var.subnets != null && var.subnets != {}) ? var.subnets : local.base_netmask > 24 ? {} : merge([
+    for az_i in range(length(var.availability_zones)) : merge([
+      for sn_i in range(length(local.subnet_prefixs)) : {
+        "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
+          cidr_block        = "${local.base_ip[0]}.${local.base_ip[1]}.%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}.%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
+          availability_zone = "${var.availability_zones[az_i]}"
+        }
+      } if local.subnet_prefixs[sn_i] != ""
     ]...)
   ]...)
+
+  # Subnets
+  subnets = var.existing_subnets != null ? var.existing_subnets : module.security-vpc.subnets
+
   # Security VPC route table
   route_tables = {
-    "secvpc" = {
+    "secvpc" = (module.security-vpc.igw == null ||
+      length([for k, v in local.create_subnets : k if startswith(k, "fgt_login_")]) == 0) ? {} : {
       fgt_login = {
         routes = {
           local_pc = {
             destination_cidr_block = "0.0.0.0/0"
-            gateway_id             = module.security-vpc.igw
+            gateway_id             = module.security-vpc.igw.id
           }
         },
-        rt_association_subnets = [for k, v in module.security-vpc.subnets : v if startswith(k, "fgt_login_")]
+        rt_association_subnets = [for k, v in local.create_subnets : local.subnets[k]["id"] if startswith(k, "fgt_login_")]
       }
     }
   }
@@ -50,16 +58,27 @@ locals {
   }
 }
 
+
+resource "null_resource" "validation_check_subnet_cidr" {
+  count = var.existing_subnets == null && var.subnets == null && local.subnet_cidr_block != "" && local.base_netmask > 24 ? (
+    <<EOT
+    "Auto set subnet do not support netmask larger then 24. Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
+    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\". Specify the target subnet you needed." 
+  EOT
+  ) : 0
+}
+
 # Create security VPC including subnets, IGW, and security groups
 module "security-vpc" {
   source = "../../modules/aws/vpc"
 
   existing_vpc    = var.existing_security_vpc
+  existing_igw    = var.existing_igw
   vpc_name        = var.vpc_name
   igw_name        = var.igw_name
   security_groups = var.security_groups
   vpc_cidr_block  = var.vpc_cidr_block
-  subnets         = local.subnets
+  subnets         = local.create_subnets
 
   tags = {
     general = merge(
@@ -96,7 +115,7 @@ module "fgt_asg" {
   # FortiGate instance template
   template_name                  = lookup(each.value, "template_name", "")
   fgt_version                    = each.value.fgt_version
-  instance_type                  = lookup(each.value, "instance_type", "c5.xlarge")
+  instance_type                  = lookup(each.value, "instance_type", "c5n.xlarge")
   license_type                   = lookup(each.value, "license_type", "on_demand")
   fgt_hostname                   = lookup(each.value, "fgt_hostname", "")
   fgt_password                   = each.value.fgt_password
@@ -104,6 +123,8 @@ module "fgt_asg" {
   lic_folder_path                = lookup(each.value, "lic_folder_path", null)
   lic_s3_name                    = lookup(each.value, "lic_s3_name", null)
   fortiflex_refresh_token        = lookup(each.value, "fortiflex_refresh_token", "")
+  fortiflex_username             = lookup(each.value, "fortiflex_username", "")
+  fortiflex_password             = lookup(each.value, "fortiflex_password", "")
   fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", [])
   fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", [])
   keypire_name                   = each.value.keypair_name
@@ -130,7 +151,7 @@ module "fgt_asg" {
     var.fgt_intf_mode == "1-arm" ? jsonencode({
       mgmt = {
         device_index      = 0
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
         enable_public_ip  = true
         to_gwlb           = true
         source_dest_check = true
@@ -139,7 +160,7 @@ module "fgt_asg" {
       }) : jsonencode({
       mgmt = {
         device_index      = 1
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
         enable_public_ip  = true
         source_dest_check = true
         security_groups   = [module.security-vpc.security_group[each.value.intf_security_group["login_port"]]]
@@ -147,7 +168,7 @@ module "fgt_asg" {
       internal_traffic = {
         device_index    = 0
         to_gwlb         = true
-        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => module.security-vpc.subnets[k] if startswith(k, "fgt_internal_") }
+        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_internal_") }
         security_groups = [module.security-vpc.security_group[each.value.intf_security_group["internal_port"]]]
       }
     })
@@ -156,7 +177,7 @@ module "fgt_asg" {
   create_geneve_for_all_az = var.enable_cross_zone_load_balancing
   gwlb_ips                 = module.security-vpc-gwlb.gwlb_ips
   asg_health_check_type    = "ELB"
-  asg_gwlb_tgp             = [module.security-vpc-gwlb.gwlb_tgp.arn]
+  asg_gwlb_tgp             = module.security-vpc-gwlb.gwlb_tgp == null ? null : [module.security-vpc-gwlb.gwlb_tgp.arn]
   lambda_timeout           = 500
   az_name_map              = local.az_name_map
   tags = {
@@ -217,8 +238,11 @@ resource "aws_cloudwatch_metric_alarm" "hybrid_asg" {
 module "security-vpc-gwlb" {
   source = "../../modules/aws/gwlb"
 
+  existing_gwlb                    = var.existing_gwlb
+  existing_gwlb_tgp                = var.existing_gwlb_tgp
+  existing_gwlb_ep_service         = var.existing_gwlb_ep_service
   gwlb_name                        = var.gwlb_name
-  subnets                          = [for k, v in module.security-vpc.subnets : v if startswith(k, local.internal_port_prefix)]
+  subnets                          = [for k, v in local.subnets : v["id"] if startswith(k, local.internal_port_prefix)]
   tgp_name                         = var.tgp_name
   deregistration_delay             = 30
   enable_cross_zone_load_balancing = var.enable_cross_zone_load_balancing
@@ -226,9 +250,10 @@ module "security-vpc-gwlb" {
     port     = 80
     protocol = "TCP"
   }
-  vpc_id       = module.security-vpc.vpc_id
-  gwlb_ln_name = "gwlb-ln"
-  gwlb_endps   = local.gwlb_endps
+  vpc_id               = module.security-vpc.vpc_id
+  gwlb_ln_name         = "gwlb-ln"
+  gwlb_ep_service_name = var.gwlb_ep_service_name
+  gwlb_endps           = local.gwlb_endps
   depends_on = [
     module.security-vpc
   ]

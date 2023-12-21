@@ -683,7 +683,7 @@ class FgtConf:
                 # Deactive current token
                 oauth_token = self.get_fortiflex_oauth_token()
                 if oauth_token:
-                    self.generate_vm_token(sn, oauth_token)
+                    self.stop_sn(sn, oauth_token)
         # Update instance info on Dynamo DB
         self.remove_asg_instance_dydb(self.fgt_vm_id)
         if self.enable_fgt_system_autoscale:
@@ -848,6 +848,9 @@ class FgtConf:
                 available_sn_list = self.convert_aws_dydb_to_normal_format(dydb_items["available_sn_list"])
                 if available_sn_list:
                     for cur_sn in available_sn_list:
+                        b_succ = self.reactivate_sn(cur_sn, oauth_token)
+                        if not b_succ:
+                            continue
                         vm_token = self.generate_vm_token(cur_sn, oauth_token)
                         if vm_token:
                             self.remove_available_sn({cur_sn})
@@ -1222,9 +1225,11 @@ class FgtConf:
             new_oauth_token = self.refresh_oauth_token(oauth_refresh_token)
         if not new_oauth_token:
             oauth_refresh_token = os.getenv("fortiflex_refresh_token")
-            if not oauth_refresh_token: # Variable fortiflex_refresh_token not been provided
-                return ""
-            new_oauth_token = self.refresh_oauth_token(oauth_refresh_token)
+            if oauth_refresh_token: # Generate OAuth token by given refresh token
+                new_oauth_token = self.refresh_oauth_token(oauth_refresh_token)
+            if not new_oauth_token: # Try FortiFlex API username and password if refresh token not been provided or invalid
+                new_oauth_token, new_refresh_token = self.generate_refresh_token()
+                
         return new_oauth_token
 
     def update_fortiflex_oauth_token(self, oauth_token):
@@ -1242,7 +1247,40 @@ class FgtConf:
     def update_fortiflex_refresh_token(self, oauth_refresh_token):
         b_succ = self.put_item_to_dydb("fortiflex", "oauth_refresh_token", oauth_refresh_token)
         return b_succ
-   
+    
+    def generate_refresh_token(self):
+        self.logger.info("Generate OAuth token and refresh token by API username and password.")
+        oauth_token = ""
+        refresh_token = ""
+        fortiflex_username = os.getenv("fortiflex_username")
+        fortiflex_password = os.getenv("fortiflex_password")
+        if not fortiflex_username or not fortiflex_password:
+            return oauth_token, refresh_token
+        
+        url = "https://customerapiauth.fortinet.com/api/v1/oauth/token/"
+        header = {
+            "Content-Type": "application/json"
+        }
+        body = {
+            "username": fortiflex_username,
+            "password": fortiflex_password,
+            "client_id": "flexvm",
+            "grant_type":"password"
+        }
+        response = requests.post(url, headers=header, json=body, verify=False, timeout=10)
+        if response.status_code == 200:
+            response_json = response.json()
+            if response_json:
+                if "access_token" in response_json and "refresh_token" in response_json:
+                    oauth_token = response_json["access_token"]
+                    refresh_token = response_json["refresh_token"]
+                    self.update_fortiflex_oauth_token(oauth_token)
+                    self.update_fortiflex_refresh_token(refresh_token)
+            else:
+                self.logger.info("Could not get http return status")
+        response.close()
+        return oauth_token, refresh_token
+    
     def generate_vm_token(self, sn, oauth_token):
         self.logger.info("Generate VM token.")
         vm_token = ""
@@ -1268,6 +1306,62 @@ class FgtConf:
                 self.logger.info("Could not get http return status")
         response.close()
         return vm_token
+   
+    def reactivate_sn(self, sn, oauth_token):
+        self.logger.info("Reactivate Serial Number License.")
+        b_succ = False
+        url = "https://support.fortinet.com/ES/api/fortiflex/v2/entitlements/reactivate"
+        header = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {oauth_token}"
+        }
+        body = {
+            "serialNumber": sn
+        }
+        response = requests.post(url, headers=header, json=body, verify=False, timeout=10)
+        response_json = response.json()
+        if response.status_code == 200:
+            if response_json:
+                if "entitlements" not in response_json or not response_json["entitlements"]:
+                    if "error" in response_json and not response_json["error"]:
+                        err_msg = response_json["error"]
+                        self.logger.error(f"Could not reactivate the license for serial number {sn}, error msg: {err_msg}")
+                elif "status" in response_json and response_json["status"] == 0 :
+                    b_succ = True
+            else:
+                self.logger.info("Could not get http return status")
+        elif response.status_code == 400:
+            # return True if SN's status is 'PENDING' and could not be modified
+            if "status" in response_json and response_json["status"] == -1:
+                b_succ = True
+        response.close()
+        return b_succ
+   
+    def stop_sn(self, sn, oauth_token):
+        self.logger.info("Stop Serial Number License.")
+        b_succ = True
+        url = "https://support.fortinet.com/ES/api/fortiflex/v2/entitlements/stop"
+        header = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {oauth_token}"
+        }
+        body = {
+            "serialNumber": sn
+        }
+        response = requests.post(url, headers=header, json=body, verify=False, timeout=10)
+        if response.status_code == 200:
+            response_json = response.json()
+            if response_json:
+                if "entitlements" not in response_json and not response_json["entitlements"]:
+                    if "error" in response_json and not response_json["error"]:
+                        err_msg = response_json["error"]
+                        self.logger.error(f"Could not stop the license for serial number {sn}, error msg: {err_msg}")
+                    b_succ = False
+            else:
+                self.logger.info("Could not get http return status")
+                b_succ = False
+        response.close()
+        return b_succ
 
    # Serial number related
     def update_all_sn_list(self):
@@ -1340,7 +1434,7 @@ class FgtConf:
                         self.logger.error(f"Could not get sefial numbers by config id {configid}, error msg: {err_msg}")
                     return []
                 for ele in response_json["entitlements"]:
-                    if ele["status"] in {"ACTIVE", "PENDING"}:
+                    if ele["status"] in {"ACTIVE", "PENDING", "STOPPED"}:
                         sn_list.append(ele["serialNumber"])
             else:
                 self.logger.info("Could not get http return status")
