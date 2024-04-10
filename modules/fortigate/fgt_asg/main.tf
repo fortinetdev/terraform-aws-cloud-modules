@@ -1,5 +1,8 @@
 locals {
-  ami_search_string = var.license_type == "byol" ? "FortiGate-VM64-AWS build*${var.fgt_version}*" : "FortiGate-VM64-AWSONDEMAND build*${var.fgt_version}*"
+  chip_type         = strcontains(split(".", var.instance_type)[0], "g") ? "ARM" : "Intel"
+  product_code      = var.license_type == "byol" ? (local.chip_type == "ARM" ? "33ndn84xbrajb9vmu5lxnfpjq" : "dlaioq277sglm5mw1y1dmeuqa") : (local.chip_type == "ARM" ? "8gc40z1w65qjt61p9ps88057n" : "2wqkpek696qhdeo7lbbjncqli")
+  ami_search_string = var.license_type == "byol" ? "FortiGate-VM*(${var.fgt_version}*" : "FortiGate-VM*(${var.fgt_version}*"
+  fos_ami_id        = var.ami_id != "" ? var.ami_id : data.aws_ami.fgt_ami.id
 }
 
 data "aws_ami" "fgt_ami" {
@@ -9,6 +12,11 @@ data "aws_ami" "fgt_ami" {
   filter {
     name   = "name"
     values = [local.ami_search_string]
+  }
+
+  filter {
+    name   = "product-code"
+    values = [local.product_code]
   }
 }
 
@@ -27,7 +35,7 @@ locals {
 ## FortiGate instance launch template
 resource "aws_launch_template" "fgt" {
   name                   = var.template_name == "" ? null : var.template_name
-  image_id               = data.aws_ami.fgt_ami.id
+  image_id               = local.fos_ami_id
   instance_type          = var.instance_type
   key_name               = var.keypire_name
   update_default_version = true

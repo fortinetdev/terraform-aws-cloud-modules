@@ -114,7 +114,8 @@ module "fgt_asg" {
   for_each = var.asgs
   # FortiGate instance template
   template_name                  = lookup(each.value, "template_name", "")
-  fgt_version                    = each.value.fgt_version
+  ami_id                         = lookup(each.value, "ami_id", "")
+  fgt_version                    = lookup(each.value, "fgt_version", "")
   instance_type                  = lookup(each.value, "instance_type", "c5n.xlarge")
   license_type                   = lookup(each.value, "license_type", "on_demand")
   fgt_hostname                   = lookup(each.value, "fgt_hostname", "")

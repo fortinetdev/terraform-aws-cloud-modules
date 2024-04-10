@@ -486,6 +486,7 @@ variable "asgs" {
   Options:
     FortiGate instance template
     - template_name : (Optional|string) Instance template name.
+    - ami_id : (Optional|string) The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version.
     - fgt_version : (Required|string) FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version.
     - instance_type : (Optional|string) Instance type for the FortiGate instances. Default is c5.xlarge.
     - license_type : (Optional|string) License type for the FortiGate instances. Options: on_demand, byol. Default is on_demand.

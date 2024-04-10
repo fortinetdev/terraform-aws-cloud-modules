@@ -1,5 +1,14 @@
 ## Unreleased
 
+## 1.0.2 (Apr 9, 2024)
+
+IMPROVEMENTS:
+
+* Fix issue of get federal image of FOS; 
+* Update upload fortiflex token to make the token in the data field; 
+* Update doc of example spk_gwlb_asg_fgt_wlb_igw; 
+* Add variable ami_id to support user providing FOS AMI ID;
+
 ## 1.0.1 (Dec 20, 2023)
 
 IMPROVEMENTS:

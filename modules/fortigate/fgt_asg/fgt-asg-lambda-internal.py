@@ -87,14 +87,17 @@ class FgtConf:
 
     def upload_license_token_http(self, lic_token):
         self.logger.info("Active license token by HTTP.")
-        url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/monitor/system/vmlicense/download?&token={lic_token}"
+        url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/monitor/system/vmlicense/download"
 
         header = {
             "Content-Type": "application/json",
             "Cookie": self.cookie["cookie"],
             "X-CSRFTOKEN": self.cookie["csrftoken"]
         }
-        response = requests.post(url, headers=header, verify=False, timeout=20)
+        body = {
+            "token" : lic_token
+        }
+        response = requests.post(url, headers=header, json=body, verify=False, timeout=20)
         fgt_return_status = False
         if response.status_code == 200:
             response_json = response.json()

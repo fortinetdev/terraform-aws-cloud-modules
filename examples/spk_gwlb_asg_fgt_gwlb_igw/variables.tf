@@ -369,7 +369,8 @@ variable "asgs" {
   Options:
     FortiGate instance template
     - template_name : (Optional|string) Instance template name.
-    - fgt_version : (Required|string) FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version.
+    - ami_id : (Optional|string) The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version.
+    - fgt_version : (Optional|string) FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version.
     - instance_type : (Optional|string) Instance type for the FortiGate instances. Default is c5.xlarge.
     - license_type : (Optional|string) License type for the FortiGate instances. Options: on_demand, byol. Default is on_demand.
     - fgt_hostname : (Optional|string) FortiGate instance hostname.
@@ -675,7 +676,7 @@ variable "spk_vpc" {
     ```
     Spoke VPC options:
         - vpc_id     : (Optional|string) Spoke VPC ID.
-        - gwlbe_subnet_ids : (Optional|list) Subnet ID list. Note: Subnets that TGW will attach to should not already have a route table association.
+        - gwlbe_subnet_ids : (Optional|list) Subnet ID list that used to create GWLB endpoint.
         - route_tables     : (Optional|map) Route table configurations. Please check the detailed configuration requirement on module vpc_route_table. Note: if the target argument is the Gateway Load Balancer Endpoint created by the template, use `gwlbe_subnet_id` to specify the subnet ID of the target GWLBE.
     Example:
     ```

@@ -46,6 +46,7 @@ No modules.
 
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
+| <a name="input_ami_id"></a> [ami\_id](#input\_ami\_id) | The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version. | `string` | `""` | no |
 | <a name="input_asg_desired_capacity"></a> [asg\_desired\_capacity](#input\_asg\_desired\_capacity) | Number of Amazon EC2 instances that should be running in the group. | `number` | `null` | no |
 | <a name="input_asg_gwlb_tgp"></a> [asg\_gwlb\_tgp](#input\_asg\_gwlb\_tgp) | Set of aws\_alb\_target\_group ARNs | `list(string)` | `[]` | no |
 | <a name="input_asg_health_check_grace_period"></a> [asg\_health\_check\_grace\_period](#input\_asg\_health\_check\_grace\_period) | Time (in seconds) after instance comes into service before checking health. | `number` | `300` | no |
@@ -64,14 +65,14 @@ No modules.
 | <a name="input_fgt_multi_vdom"></a> [fgt\_multi\_vdom](#input\_fgt\_multi\_vdom) | Whether FortiGate instance enable multi-vdom mode. Default is false. Note: Only license\_type set to byol could enable multi-vdom mode. | `bool` | `false` | no |
 | <a name="input_fgt_password"></a> [fgt\_password](#input\_fgt\_password) | FortiGate instance login password. This is required for BYOL type of FortiGate instance since we need to upload the license to the instance by lambda function. | `string` | n/a | yes |
 | <a name="input_fgt_system_autoscale_psksecret"></a> [fgt\_system\_autoscale\_psksecret](#input\_fgt\_system\_autoscale\_psksecret) | FotiGate system auto-scale psksecret. | `string` | `""` | no |
-| <a name="input_fgt_version"></a> [fgt\_version](#input\_fgt\_version) | Provide the FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version. Default is 7.2. | `string` | `"7.2"` | no |
+| <a name="input_fgt_version"></a> [fgt\_version](#input\_fgt\_version) | Provide the FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version. Default is 7.2. | `string` | `"7.4"` | no |
 | <a name="input_fortiflex_configid_list"></a> [fortiflex\_configid\_list](#input\_fortiflex\_configid\_list) | Config ID list from FortiFlex account that used to activate FortiGate instance. | `list` | `[]` | no |
 | <a name="input_fortiflex_password"></a> [fortiflex\_password](#input\_fortiflex\_password) | Password of FortiFlex API user. | `string` | `null` | no |
 | <a name="input_fortiflex_refresh_token"></a> [fortiflex\_refresh\_token](#input\_fortiflex\_refresh\_token) | Refresh token used for FortiFlex. | `string` | `null` | no |
 | <a name="input_fortiflex_sn_list"></a> [fortiflex\_sn\_list](#input\_fortiflex\_sn\_list) | Serial number list from FortiFlex account that used to activate FortiGate instance. | `list` | `[]` | no |
 | <a name="input_fortiflex_username"></a> [fortiflex\_username](#input\_fortiflex\_username) | Username of FortiFlex API user. | `string` | `null` | no |
 | <a name="input_gwlb_ips"></a> [gwlb\_ips](#input\_gwlb\_ips) | Gateway Load Balancer IPs that used for FortiGate configuration.<br>Format:<pre>gwlb_ips = {<br>        \<Subnet_id\> = \<IP\><br>  }</pre>Example:<pre>gwlb_ips = {<br>  subnet-12345678 = 10.0.0.47<br>}</pre> | `map(string)` | `{}` | no |
-| <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Provide the instance type for the FortiGate instances | `string` | `"c5.xlarge"` | no |
+| <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Provide the instance type for the FortiGate instances | `string` | `"c6i.xlarge"` | no |
 | <a name="input_keypire_name"></a> [keypire\_name](#input\_keypire\_name) | The keypair name that used in FortiGate EC2 instance. | `string` | n/a | yes |
 | <a name="input_lambda_timeout"></a> [lambda\_timeout](#input\_lambda\_timeout) | Amount of time your Lambda Function has to run in seconds. Defaults to 300. | `number` | `300` | no |
 | <a name="input_lic_folder_path"></a> [lic\_folder\_path](#input\_lic\_folder\_path) | Folder path of FortiGate license files or token json file. | `string` | `null` | no |

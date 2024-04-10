@@ -1,9 +1,16 @@
 ## FortiGate instance template
+variable "ami_id" {
+  description = "The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version."
+  type        = string
+  default     = ""
+}
+
 variable "template_name" {
   description = "The name of the launch template. If you leave this blank, Terraform will auto-generate a unique name."
   type        = string
   default     = ""
 }
+
 variable "keypire_name" {
   description = "The keypair name that used in FortiGate EC2 instance."
   type        = string
@@ -23,7 +30,7 @@ variable "az_name_map" {
 
 variable "instance_type" {
   description = "Provide the instance type for the FortiGate instances"
-  default     = "c5.xlarge"
+  default     = "c6i.xlarge"
   type        = string
 }
 
@@ -52,7 +59,7 @@ variable "fgt_multi_vdom" {
 
 variable "fgt_version" {
   description = "Provide the FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version. Default is 7.2."
-  default     = "7.2"
+  default     = "7.4"
   type        = string
 }
 
