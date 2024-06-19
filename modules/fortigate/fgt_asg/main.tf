@@ -208,13 +208,24 @@ resource "aws_iam_role_policy" "iam_policy" {
           "ec2:CreateTags",
           "autoscaling:CompleteLifecycleAction",
           "autoscaling:DescribeAutoScalingGroups",
-          "s3:*",
-          "s3-object-lambda:*",
+
           "lambda:InvokeFunction",
           "dynamodb:*"
         ],
         Effect   = "Allow",
         Resource = "*"
+      },
+      {
+        Action = [
+          "s3:*",
+          "s3-object-lambda:*",
+        ],
+        Effect   = "Allow",
+        Resource = [
+          "${aws_s3_bucket.fgt_lic[0].arn}",
+          "${aws_s3_bucket.fgt_lic[0].arn}/*"
+          ]
+  
       },
       {
         Action = [
