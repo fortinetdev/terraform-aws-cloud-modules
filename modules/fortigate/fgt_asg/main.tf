@@ -41,6 +41,11 @@ resource "aws_launch_template" "fgt" {
   update_default_version = true
   user_data              = base64encode(local.fgt_userdata)
 
+  monitoring {
+    enabled = var.detailed_monitoring
+ 
+  }  
+
   dynamic "network_interfaces" {
     for_each = { for k, v in var.network_interfaces : k => v if v.device_index == 0 }
 

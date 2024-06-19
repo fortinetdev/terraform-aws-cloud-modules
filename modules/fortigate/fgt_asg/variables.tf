@@ -34,6 +34,12 @@ variable "instance_type" {
   type        = string
 }
 
+variable "detailed_monitoring" {
+  description = "If true, the launched EC2 instance will have detailed monitoring enabled."
+  default     = false
+  type        = bool
+}
+
 variable "license_type" {
   description = "Provide the license type for the FortiGate instances. Options: on_demand, byol. Default is on_demand."
   default     = "on_demand"
