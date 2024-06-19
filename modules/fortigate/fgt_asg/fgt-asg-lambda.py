@@ -596,6 +596,8 @@ class FgtConf:
         self.s3_client = boto3.client("s3")
         self.dynamodb_client = boto3.client("dynamodb")
         self.lambda_client = boto3.client("lambda")
+        self.secrets_client = boto3.client("secretsmanager")
+
 
         self.logger.info(f"Do FGT config.")
         self.logger.info(f"Event detail:: {event}")
@@ -609,6 +611,12 @@ class FgtConf:
         self.fgt_login_port_number = os.getenv("fgt_login_port_number")
         self.internal_lambda_name = os.getenv("internal_lambda_name")
         self.asg_name = os.getenv("asg_name")
+        self.fgt_password_secret_name = os.getenv("fgt_password_secret_name")
+        
+        if os.getenv("fgt_password_from_secrets_manager") == "true":
+            self.fgt_password = self.get_secret()
+        else:
+             self.fgt_password = "<from_internal_lambda_env>"           
 
     def main(self):
         if self.detail_type == "EC2 Instance Launch Successful":
@@ -769,6 +777,7 @@ class FgtConf:
         if license_type == "token":
             payload = {
                 "private_ip" : fgt_private_ip,
+                "password" : self.fgt_password,
                 "operation" : "upload_license",
                 "parameters" : {
                     "license_type": license_type,
@@ -787,6 +796,7 @@ class FgtConf:
             lic_file_content = self.get_lic_file_content(license_content)
             payload = {
                 "private_ip" : fgt_private_ip,
+                "password" : self.fgt_password,
                 "operation" : "upload_license",
                 "parameters" : {
                     "license_type": license_type,
@@ -2002,6 +2012,7 @@ class FgtConf:
         self.logger.info("Upload configuration to FortiGate instance.")
         payload = {
             "private_ip" : fgt_private_ip,
+            "password" : self.fgt_password,
             "operation" : "upload_config",
             "parameters" : {
                 "config_content": config_content
@@ -2027,6 +2038,7 @@ class FgtConf:
         self.logger.info("Change password.")
         payload = {
             "private_ip" : fgt_private_ip,
+            "password" : self.fgt_password,
             "operation" : "change_password",
             "parameters" : {
                 "fgt_vm_id": fgt_vm_id
@@ -2034,7 +2046,25 @@ class FgtConf:
         }
         b_succ = self.invoke_lambda(payload)
         return b_succ
- 
+    
+    def get_secret(self):
+
+        secret_name = self.fgt_password_secret_name
+        get_secret_value_response = ""
+
+        try:
+            get_secret_value_response = self.secrets_client.get_secret_value(
+                SecretId=secret_name
+            )
+        except ClientError as e:
+            # For a list of exceptions thrown, see
+            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+            self.logger.error(f"Could not get password from AWS Secrets: {e}")
+        
+        secret = json.loads(get_secret_value_response['SecretString'])
+        
+        return secret['password']
+
 def lambda_handler(event, context):
     ## Network Interface operations
     intfObject = NetworkInterface()

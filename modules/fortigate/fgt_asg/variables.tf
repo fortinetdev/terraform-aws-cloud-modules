@@ -320,6 +320,12 @@ variable "lambda_timeout" {
   default     = 300
 }
 
+variable "fgt_password_from_secrets_manager" {
+  description = "Whether to use AWS Secrets Manager secret to retrieve FortiGate admin password."
+  type        = bool
+  default     = false
+}
+
 variable "lic_s3_name" {
   description = "AWS S3 bucket name that contains FortiGate license files or token json file."
   type        = string

@@ -29,6 +29,7 @@ locals {
     fgt_login_port_number = var.fgt_login_port_number
   }
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
+  secrets_manager_name = "/fgt_asg_admin/password"
 }
 
 
@@ -238,7 +239,14 @@ resource "aws_iam_role_policy" "iam_policy" {
         ],
         Effect   = "Allow",
         Resource = "arn:aws:events:*:*:rule/*"
-      }
+      },
+      {
+        Action = [
+          "secretsmanager:GetSecretValue"
+        ],
+        Effect = "Allow",
+        Resource = aws_secretsmanager_secret.fgt_asg_admin.arn
+      },      
     ]
   })
 }
@@ -362,6 +370,9 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
 
   environment {
     variables = {
+      fgt_password_from_secrets_manager = var.fgt_password_from_secrets_manager
+      
+      fgt_password_secret_name       = local.secrets_manager_name
       internal_lambda_name           = "fgt-asg-lambda-internal_${var.asg_name}"
       asg_name                       = var.asg_name
       network_interfaces             = jsonencode(var.network_interfaces)
@@ -409,8 +420,9 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
 
   environment {
     variables = {
-      fgt_password          = var.fgt_password
-      fgt_login_port_number = var.fgt_login_port_number
+      fgt_password                      = var.fgt_password
+      fgt_password_from_secrets_manager = var.fgt_password_from_secrets_manager
+      fgt_login_port_number             = var.fgt_login_port_number  
     }
   }
 
@@ -480,4 +492,33 @@ resource "aws_cloudwatch_event_target" "fgt_asg_terminate" {
   rule      = aws_cloudwatch_event_rule.fgt_asg_terminate.name
   target_id = "fgt_asg_terminate_target_${var.asg_name}"
   arn       = aws_lambda_function.fgt_asg_lambda.arn
+}
+
+# ------------------------------------------------------------------------------
+# SECRETS MANAGER
+# ------------------------------------------------------------------------------
+
+resource "random_password" "password" {
+  length           = 32
+  special          = true
+  override_special = "@#_&!?"
+}
+
+resource "aws_secretsmanager_secret" "fgt_asg_admin" {
+  name        = local.secrets_manager_name
+  description = "Admin password for Fortigate ASG instances"
+  
+  tags = merge(
+    lookup(var.tags, "general", {}),
+    lookup(var.tags, "secretsmanager", {})
+  )
+}
+
+resource "aws_secretsmanager_secret_version" "fgt_asg_admin_password" {
+  secret_id     = aws_secretsmanager_secret.fgt_asg_admin.id
+  secret_string = jsonencode(
+    {
+      password = random_password.password.result
+    }
+  )
 }
