@@ -320,6 +320,11 @@ variable "lambda_timeout" {
   default     = 300
 }
 
+variable "route53_zone_id" {
+  description = "The ZoneID to be used for primary address DNS registration"
+  type        = string
+}
+
 variable "fgt_password_from_secrets_manager" {
   description = "Whether to use AWS Secrets Manager secret to retrieve FortiGate admin password."
   type        = bool

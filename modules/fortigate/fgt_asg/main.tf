@@ -246,7 +246,17 @@ resource "aws_iam_role_policy" "iam_policy" {
         ],
         Effect = "Allow",
         Resource = aws_secretsmanager_secret.fgt_asg_admin.arn
-      },      
+      },
+      {
+        Action = [
+          "route53:ChangeResourceRecordSets",
+          "route53:GetChange",
+          "route53:GetHostedZone",
+          "route53:ListHostedZones",
+        ],
+        Effect = "Allow",
+        Resource = "arn:aws:route53:::hostedzone/${var.route53_zone_id}"
+      },         
     ]
   })
 }
@@ -392,6 +402,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       fortiflex_sn_list              = jsonencode(var.fortiflex_sn_list)
       fortiflex_configid_list        = jsonencode(var.fortiflex_configid_list)
       az_name_map                    = jsonencode(var.az_name_map)
+      route53_zone_id                = var.route53_zone_id
     }
   }
 
