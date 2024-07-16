@@ -34,6 +34,12 @@ variable "instance_type" {
   type        = string
 }
 
+variable "detailed_monitoring" {
+  description = "If true, the launched EC2 instance will have detailed monitoring enabled."
+  default     = false
+  type        = bool
+}
+
 variable "license_type" {
   description = "Provide the license type for the FortiGate instances. Options: on_demand, byol. Default is on_demand."
   default     = "on_demand"
@@ -312,6 +318,17 @@ variable "lambda_timeout" {
   description = "Amount of time your Lambda Function has to run in seconds. Defaults to 300."
   type        = number
   default     = 300
+}
+
+variable "route53_zone_id" {
+  description = "The ZoneID to be used for primary address DNS registration"
+  type        = string
+}
+
+variable "fgt_password_from_secrets_manager" {
+  description = "Whether to use AWS Secrets Manager secret to retrieve FortiGate admin password."
+  type        = bool
+  default     = false
 }
 
 variable "lic_s3_name" {

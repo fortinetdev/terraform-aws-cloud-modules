@@ -11,7 +11,6 @@ class FgtConf:
         self.logger = logging.getLogger("lambda")
         self.logger.setLevel(logging.INFO)
         self.cookie = {}
-        self.fgt_password = os.getenv("fgt_password")
         self.fgt_login_port = "" if os.getenv("fgt_login_port_number") == "" else ":" + os.getenv("fgt_login_port_number")
         self.return_json = {
             'StatusCode': 200,
@@ -22,6 +21,15 @@ class FgtConf:
     def main(self, event):
         self.logger.info(f"Start internal lambda function.")
         self.fgt_private_ip = event["private_ip"]
+
+        fgt_password_from_secrets_manager = os.getenv("fgt_password_from_secrets_manager")
+       
+        if fgt_password_from_secrets_manager == "true":
+            self.logger.info(f"Using password from AWS Secrets Manager")            
+            self.fgt_password = event["password"]
+        else:
+            self.fgt_password = os.getenv("fgt_password")
+        
         operation = event["operation"]
         parameters = event["parameters"]
         if operation == "change_password":

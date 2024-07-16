@@ -596,6 +596,9 @@ class FgtConf:
         self.s3_client = boto3.client("s3")
         self.dynamodb_client = boto3.client("dynamodb")
         self.lambda_client = boto3.client("lambda")
+        self.secrets_client = boto3.client("secretsmanager")
+        self.route53_client = boto3.client('route53')
+
 
         self.logger.info(f"Do FGT config.")
         self.logger.info(f"Event detail:: {event}")
@@ -609,6 +612,13 @@ class FgtConf:
         self.fgt_login_port_number = os.getenv("fgt_login_port_number")
         self.internal_lambda_name = os.getenv("internal_lambda_name")
         self.asg_name = os.getenv("asg_name")
+        self.fgt_password_secret_name = os.getenv("fgt_password_secret_name")
+        self.route53_zone_id = os.getenv("route53_zone_id")
+        
+        if os.getenv("fgt_password_from_secrets_manager") == "true":
+            self.fgt_password = self.get_secret()
+        else:
+             self.fgt_password = "<from_internal_lambda_env>"           
 
     def main(self):
         if self.detail_type == "EC2 Instance Launch Successful":
@@ -662,7 +672,41 @@ class FgtConf:
 
         config_content = self.gen_config_content(self.fgt_vm_id)
         b_succ = self.upload_config(config_content, fgt_private_ip)
+    
+    def update_route53_primary(self, record_name, record_value, zone_id, ttl=60):
+        self.logger.info(f"Updating record {record_name} with {record_value} on Route53.")
 
+        if not zone_id:
+            self.logger.error(f"Error: route53_zone_id env var is undefined. Record update aborted")
+            return
+
+        domain_name = self.route53_client.get_hosted_zone(Id=zone_id)['HostedZone']['Name']
+        dns_record = record_name + '.' + domain_name
+
+        # Prepare the change batch request
+        change_batch = {
+            'Changes': [
+                {
+                    'Action': 'UPSERT',
+                    'ResourceRecordSet': {
+                        'Name': dns_record,
+                        'Type': 'A',
+                        'TTL': ttl,
+                        'ResourceRecords': [{'Value': record_value}]
+                    }
+                }
+            ]
+        }
+
+        # Update the record
+        try:
+            response = self.route53_client.change_resource_record_sets(
+                HostedZoneId=zone_id,
+                ChangeBatch=change_batch
+            )
+            print(f"Change submitted. Status: {response['ChangeInfo']['Status']}")
+        except Exception as e:
+            print(f"Error updating the record: {e}") 
         
     def do_terminate(self):
         need_license = os.getenv("need_license")
@@ -715,6 +759,24 @@ class FgtConf:
                     rst = cur_private_ip
                     break
         return rst
+    
+    def get_public_ip(self, instance_id):
+        self.logger.info(f"Get public ip for current instance.")
+        rst = None
+        response = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+        instances = response['Reservations'][0]['Instances']
+
+        if instances:
+            for instance in instances:
+                network_interfaces = instance.get('NetworkInterfaces', [])
+                for interface in network_interfaces:
+                    public_ip = interface.get('Association', {}).get('PublicIp')
+                    if public_ip:
+                        rst = public_ip
+                        break   
+        if not rst:
+            self.logger.error(f"Failed to get public interface address for {instance_id}.")
+        return rst   
 
     def get_primary_ip(self, instance):
         self.logger.info(f"Get primary ip for current instance.")
@@ -769,6 +831,7 @@ class FgtConf:
         if license_type == "token":
             payload = {
                 "private_ip" : fgt_private_ip,
+                "password" : self.fgt_password,
                 "operation" : "upload_license",
                 "parameters" : {
                     "license_type": license_type,
@@ -787,6 +850,7 @@ class FgtConf:
             lic_file_content = self.get_lic_file_content(license_content)
             payload = {
                 "private_ip" : fgt_private_ip,
+                "password" : self.fgt_password,
                 "operation" : "upload_license",
                 "parameters" : {
                     "license_type": license_type,
@@ -1787,7 +1851,15 @@ class FgtConf:
                 })
             b_succ = True
         except Exception as err:
-            self.logger.error(f"Could not update primary instance information: {err}")
+            self.logger.error(f"Could not update primary instance information: {err}") 
+        
+        if instance_id:
+            # Create DNS records to indentify the primary instance
+            public_ip = self.get_public_ip(instance_id)
+            self.update_route53_primary('traffic-inspection-public', public_ip, self.route53_zone_id)
+            self.update_route53_primary('traffic-inspection-private', primary_ip, self.route53_zone_id)
+        
+
         return b_succ
     
     def check_primary(self, fgt_vm_id):
@@ -2002,6 +2074,7 @@ class FgtConf:
         self.logger.info("Upload configuration to FortiGate instance.")
         payload = {
             "private_ip" : fgt_private_ip,
+            "password" : self.fgt_password,
             "operation" : "upload_config",
             "parameters" : {
                 "config_content": config_content
@@ -2027,6 +2100,7 @@ class FgtConf:
         self.logger.info("Change password.")
         payload = {
             "private_ip" : fgt_private_ip,
+            "password" : self.fgt_password,
             "operation" : "change_password",
             "parameters" : {
                 "fgt_vm_id": fgt_vm_id
@@ -2034,7 +2108,25 @@ class FgtConf:
         }
         b_succ = self.invoke_lambda(payload)
         return b_succ
- 
+    
+    def get_secret(self):
+
+        secret_name = self.fgt_password_secret_name
+        get_secret_value_response = ""
+
+        try:
+            get_secret_value_response = self.secrets_client.get_secret_value(
+                SecretId=secret_name
+            )
+        except ClientError as e:
+            # For a list of exceptions thrown, see
+            # https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+            self.logger.error(f"Could not get password from AWS Secrets: {e}")
+        
+        secret = json.loads(get_secret_value_response['SecretString'])
+        
+        return secret['password']
+
 def lambda_handler(event, context):
     ## Network Interface operations
     intfObject = NetworkInterface()
