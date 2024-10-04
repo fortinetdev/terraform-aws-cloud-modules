@@ -171,3 +171,9 @@ variable "tags" {
     error_message = "One or more argument(s) can not be identified, available options: general, tgw, tgw_attachment."
   }
 }
+
+variable "module_prefix" {
+  description = "Prefix that will be used in the whole module."
+  type        = string
+  default     = ""
+}

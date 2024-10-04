@@ -3,6 +3,7 @@ locals {
   product_code      = var.license_type == "byol" ? (local.chip_type == "ARM" ? "33ndn84xbrajb9vmu5lxnfpjq" : "dlaioq277sglm5mw1y1dmeuqa") : (local.chip_type == "ARM" ? "8gc40z1w65qjt61p9ps88057n" : "2wqkpek696qhdeo7lbbjncqli")
   ami_search_string = var.license_type == "byol" ? "FortiGate-VM*(${var.fgt_version}*" : "FortiGate-VM*(${var.fgt_version}*"
   fos_ami_id        = var.ami_id != "" ? var.ami_id : data.aws_ami.fgt_ami.id
+  asg_name          = "${var.module_prefix}${var.asg_name}"
 }
 
 data "aws_ami" "fgt_ami" {
@@ -34,7 +35,7 @@ locals {
 
 ## FortiGate instance launch template
 resource "aws_launch_template" "fgt" {
-  name                   = var.template_name == "" ? null : var.template_name
+  name                   = var.template_name == "" ? null : "${var.module_prefix}${var.template_name}"
   image_id               = local.fos_ami_id
   instance_type          = var.instance_type
   key_name               = var.keypire_name
@@ -68,7 +69,7 @@ resource "aws_launch_template" "fgt" {
 
 ## Auto Scaling Group
 resource "aws_autoscaling_group" "fgt-asg" {
-  name                      = var.asg_name
+  name                      = local.asg_name
   max_size                  = var.asg_max_size
   min_size                  = var.asg_min_size
   health_check_grace_period = var.asg_health_check_grace_period
@@ -83,14 +84,14 @@ resource "aws_autoscaling_group" "fgt-asg" {
   }
 
   initial_lifecycle_hook {
-    name                 = "fgt_asg_launch_hook"
+    name                 = "${var.module_prefix}fgt_asg_launch_hook"
     default_result       = "CONTINUE"
     heartbeat_timeout    = 60
     lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
   }
 
   initial_lifecycle_hook {
-    name                 = "fgt_asg_terminate_hook"
+    name                 = "${var.module_prefix}fgt_asg_terminate_hook"
     default_result       = "CONTINUE"
     heartbeat_timeout    = 60
     lifecycle_transition = "autoscaling:EC2_INSTANCE_TERMINATING"
@@ -160,7 +161,7 @@ data "aws_iam_policy_document" "assume_role" {
 }
 
 resource "aws_iam_role" "iam_for_lambda" {
-  name               = "iam_for_lambda-${uuid()}"
+  name_prefix        = "${var.module_prefix}lambda_terraform_module_fgt"
   assume_role_policy = data.aws_iam_policy_document.assume_role.json
   tags = merge(
     lookup(var.tags, "general", {}),
@@ -174,8 +175,8 @@ resource "aws_iam_role" "iam_for_lambda" {
 }
 
 resource "aws_iam_role_policy" "iam_policy" {
-  name = "lambda_iam_policy"
-  role = aws_iam_role.iam_for_lambda.id
+  name_prefix = "${var.module_prefix}lambda_terraform_module_fgt"
+  role        = aws_iam_role.iam_for_lambda.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -240,16 +241,17 @@ data "archive_file" "lambda_private" {
 }
 
 locals {
-  lic_folder          = var.lic_folder_path == null ? "" : trimsuffix(var.lic_folder_path, "/")
-  lic_file_set        = var.lic_s3_name != null ? toset([]) : var.lic_folder_path == null ? toset([]) : fileset(var.lic_folder_path, "*")
-  lic_s3_name         = var.lic_s3_name != null ? var.lic_s3_name : aws_s3_bucket.fgt_lic[0].id
-  dynamodb_table_name = var.dynamodb_table_name != "" ? var.dynamodb_table_name : aws_dynamodb_table.track_table[0].name
+  lic_folder              = var.lic_folder_path == null ? "" : trimsuffix(var.lic_folder_path, "/")
+  lic_file_set            = var.lic_s3_name != null ? toset([]) : var.lic_folder_path == null ? toset([]) : fileset(var.lic_folder_path, "*")
+  lic_s3_name             = var.lic_s3_name != null ? var.lic_s3_name : aws_s3_bucket.fgt_lic[0].id
+  dynamodb_table_name     = var.create_dynamodb_table == true ? aws_dynamodb_table.track_table[0].name : var.dynamodb_table_name
+  enable_privatelink_dydb = var.dynamodb_privatelink == null ? false : true
 }
 
 resource "aws_dynamodb_table" "track_table" {
   count = var.create_dynamodb_table == true ? 1 : 0
 
-  name         = "fgt_asg_track_table"
+  name         = var.dynamodb_table_name != "" ? "${var.module_prefix}fgt_asg_track_table" : "${var.module_prefix}${var.dynamodb_table_name}"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "Category"
 
@@ -263,10 +265,20 @@ resource "aws_dynamodb_table" "track_table" {
   )
 }
 
+resource "aws_vpc_endpoint" "dynamodb" {
+  count = local.enable_privatelink_dydb ? 1 : 0
+
+  vpc_id             = var.dynamodb_privatelink.vpc_id
+  service_name       = "com.amazonaws.${var.dynamodb_privatelink.region}.dynamodb"
+  subnet_ids         = var.dynamodb_privatelink.privatelink_subnet_ids
+  vpc_endpoint_type  = "Interface"
+  security_group_ids = var.dynamodb_privatelink.privatelink_security_groups
+}
+
 resource "aws_s3_bucket" "fgt_lic" {
   count = var.lic_s3_name != null ? 0 : 1
 
-  bucket = "fgt-asg-lic-${uuid()}"
+  bucket = "${var.module_prefix}fgt-asg-lic-${uuid()}"
   tags = merge(
     lookup(var.tags, "general", {}),
     lookup(var.tags, "s3", {})
@@ -334,7 +346,7 @@ resource "aws_lambda_layer_version" "lambda_layer_requests" {
 
 resource "aws_lambda_function" "fgt_asg_lambda" {
   filename         = data.archive_file.lambda_public.output_path
-  function_name    = "fgt-asg-lambda_${var.asg_name}"
+  function_name    = "${local.asg_name}_fgt-asg-lambda"
   role             = aws_iam_role.iam_for_lambda.arn
   handler          = "fgt-asg-lambda.lambda_handler"
   source_code_hash = data.archive_file.lambda_public.output_base64sha256
@@ -346,8 +358,8 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
 
   environment {
     variables = {
-      internal_lambda_name           = "fgt-asg-lambda-internal_${var.asg_name}"
-      asg_name                       = var.asg_name
+      internal_lambda_name           = "${local.asg_name}_fgt-asg-lambda-internal"
+      asg_name                       = local.asg_name
       network_interfaces             = jsonencode(var.network_interfaces)
       lic_s3_name                    = local.lic_s3_name
       need_license                   = var.license_type == "byol" ? true : false
@@ -356,7 +368,8 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       create_geneve_for_all_az       = var.create_geneve_for_all_az
       user_conf                      = var.user_conf
       user_conf_s3                   = jsonencode(var.user_conf_s3)
-      dynamodb_table_name            = var.dynamodb_table_name
+      enable_privatelink_dydb        = local.enable_privatelink_dydb
+      dynamodb_table_name            = local.enable_privatelink_dydb ? null : local.dynamodb_table_name
       enable_fgt_system_autoscale    = var.enable_fgt_system_autoscale
       fgt_system_autoscale_psksecret = var.fgt_system_autoscale_psksecret
       fortiflex_username             = var.fortiflex_username
@@ -376,7 +389,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
 
 resource "aws_lambda_function" "fgt_asg_lambda_internal" {
   filename         = data.archive_file.lambda_private.output_path
-  function_name    = "fgt-asg-lambda-internal_${var.asg_name}"
+  function_name    = "${local.asg_name}_fgt-asg-lambda-internal"
   role             = aws_iam_role.iam_for_lambda.arn
   handler          = "fgt-asg-lambda-internal.lambda_handler"
   source_code_hash = data.archive_file.lambda_private.output_base64sha256
@@ -387,14 +400,22 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
   ]
 
   vpc_config {
-    subnet_ids         = concat([for intf_name, intf_info in var.network_interfaces : values(intf_info["subnet_id_map"]) if lookup(intf_info, "subnet_id_map", null) != null]...)
-    security_group_ids = concat([for intf_name, intf_info in var.network_interfaces : intf_info["security_groups"] if lookup(intf_info, "security_groups", null) != null]...)
+    subnet_ids = distinct(concat(
+      concat([for intf_name, intf_info in var.network_interfaces : values(intf_info["subnet_id_map"]) if lookup(intf_info, "subnet_id_map", null) != null]...),
+      local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_subnet_ids : []
+    ))
+    security_group_ids = distinct(concat(
+      concat([for intf_name, intf_info in var.network_interfaces : intf_info["security_groups"] if lookup(intf_info, "security_groups", null) != null]...),
+      local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_security_groups : []
+    ))
   }
 
   environment {
     variables = {
       fgt_password          = var.fgt_password
       fgt_login_port_number = var.fgt_login_port_number
+      dynamodb_table_name   = local.enable_privatelink_dydb ? local.dynamodb_table_name : null
+      dydb_endpoint_url     = local.enable_privatelink_dydb ? aws_vpc_endpoint.dynamodb[0].dns_entry[0]["dns_name"] : null
     }
   }
 
@@ -411,7 +432,7 @@ resource "aws_lambda_permission" "lambda_permission" {
 }
 
 resource "aws_cloudwatch_event_rule" "fgt_asg_launch" {
-  name        = "fgt_asg_launch_${var.asg_name}"
+  name        = "${local.asg_name}_fgt_asg_launch"
   description = "Cloudwatch event rule for FortiGate Auto Scaling Group instance launch."
 
   event_pattern = jsonencode({
@@ -423,7 +444,7 @@ resource "aws_cloudwatch_event_rule" "fgt_asg_launch" {
       "EC2 Instance Launch Successful"
     ],
     detail = {
-      AutoScalingGroupName = [var.asg_name]
+      AutoScalingGroupName = [local.asg_name]
     }
   })
   tags = merge(
@@ -434,12 +455,12 @@ resource "aws_cloudwatch_event_rule" "fgt_asg_launch" {
 
 resource "aws_cloudwatch_event_target" "fgt_asg_launch" {
   rule      = aws_cloudwatch_event_rule.fgt_asg_launch.name
-  target_id = "fgt_asg_launch_target_${var.asg_name}"
+  target_id = "${local.asg_name}_fgt_asg_launch_target"
   arn       = aws_lambda_function.fgt_asg_lambda.arn
 }
 
 resource "aws_cloudwatch_event_rule" "fgt_asg_terminate" {
-  name        = "fgt_asg_terminate_${var.asg_name}"
+  name        = "${local.asg_name}_fgt_asg_terminate"
   description = "Cloudwatch event rule for FortiGate Auto Scaling Group instance terminate."
 
   event_pattern = jsonencode({
@@ -451,7 +472,7 @@ resource "aws_cloudwatch_event_rule" "fgt_asg_terminate" {
       "EC2 Instance Terminate Successful"
     ],
     detail = {
-      AutoScalingGroupName = [var.asg_name]
+      AutoScalingGroupName = [local.asg_name]
     }
   })
   tags = merge(
@@ -462,6 +483,6 @@ resource "aws_cloudwatch_event_rule" "fgt_asg_terminate" {
 
 resource "aws_cloudwatch_event_target" "fgt_asg_terminate" {
   rule      = aws_cloudwatch_event_rule.fgt_asg_terminate.name
-  target_id = "fgt_asg_terminate_target_${var.asg_name}"
+  target_id = "${local.asg_name}_fgt_asg_terminate_target"
   arn       = aws_lambda_function.fgt_asg_lambda.arn
 }

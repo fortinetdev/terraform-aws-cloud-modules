@@ -5,6 +5,18 @@ import base64
 import urllib
 import requests
 import re
+import boto3
+import botocore
+from botocore.exceptions import ClientError
+
+class Helper:
+    def check_missed_var(required_var_list, target_input):
+        missed_var_list = []
+        for v in required_var_list:
+            if v not in target_input:
+                missed_var_list.append(v)
+        return missed_var_list
+
 
 class FgtConf:
     def __init__(self):
@@ -14,74 +26,67 @@ class FgtConf:
         self.fgt_password = os.getenv("fgt_password")
         self.fgt_login_port = "" if os.getenv("fgt_login_port_number") == "" else ":" + os.getenv("fgt_login_port_number")
         self.return_json = {
-            'StatusCode': 200,
-            'FunctionError': None,
-            'Payload': None
+            'ErrorMsg': None,
+            'ResponseContent': None
         }
 
     def main(self, event):
-        self.logger.info(f"Start internal lambda function.")
-        self.fgt_private_ip = event["private_ip"]
+        self.logger.info(f"Start internal lambda function for FortiOS configuration service.")
         operation = event["operation"]
         parameters = event["parameters"]
+        if "private_ip" not in parameters:
+            self.return_json['ErrorMsg'] = "Could not find parameter private_ip."
+            return
+        self.fgt_private_ip = parameters["private_ip"]
         if operation == "change_password":
             if "fgt_vm_id" not in parameters:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Could not find parameter fgt_vm_id."
+                self.return_json['ErrorMsg'] = "Could not find parameter fgt_vm_id."
                 return
             b_succ = self.change_password(parameters["fgt_vm_id"])
             if not b_succ:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Could not change password."
+                self.return_json['ErrorMsg'] = "Could not change password."
                 return
         elif operation == "upload_license":
-            if "license_type" not in parameters or "license_content" not in parameters:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Missing one of the parameters: license_type, license_content."
+            missed_var_list = Helper.check_missed_var(["license_type", "license_content"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
                 return
             b_succ = self.upload_license(parameters["license_type"], parameters["license_content"])
             if not b_succ:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Could not upload license."
+                self.return_json['ErrorMsg'] = "Could not upload license."
                 return
         elif operation == "upload_config":
             if "config_content" not in parameters:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Could not find parameter config_content."
+                self.return_json['ErrorMsg'] = "Could not find parameter config_content."
                 return
             b_succ = self.upload_config(parameters["config_content"])
             if not b_succ:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Could not cupload configuration to FortiGate instance."
+                self.return_json['ErrorMsg'] = "Could not cupload configuration to FortiGate instance."
                 return
         else:
-            self.return_json['StatusCode'] = 500
-            self.return_json['FunctionError'] = f"Unknown operation {operation}."
+            self.return_json['ErrorMsg'] = f"Unknown operation {operation}."
             return
 
     
-# License
+ # License
     def upload_license(self, license_type, license_content):
         self.logger.info(f"Upload license to FortiGate instance.")
         # Upload license
         b_connected = self.connect_to_fgt_http()
         if not b_connected:
             self.logger.error(f"Could not http connect to FortiGate {self.fgt_private_ip}")
-            self.return_json['StatusCode'] = 500
-            self.return_json['FunctionError'] = f"Could not http connect to FortiGate {self.fgt_private_ip}"
+            self.return_json['ErrorMsg'] = f"Could not http connect to FortiGate {self.fgt_private_ip}"
             return False
         if license_type == "token":
             b_succ = self.upload_license_token_http(license_content)
             if not b_succ:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Active license token on FortiGate instance failed."
+                self.return_json['ErrorMsg'] = "Active license token on FortiGate instance failed."
                 return
 
         elif license_type == "file":
             b_succ = self.upload_license_file_http(license_content)
             if not b_succ:
-                self.return_json['StatusCode'] = 500
-                self.return_json['FunctionError'] = "Upload license file to FortiGate instance failed."
+                self.return_json['ErrorMsg'] = "Upload license file to FortiGate instance failed."
                 return
         return True
 
@@ -138,14 +143,13 @@ class FgtConf:
         response.close()
         return fgt_return_status
 
-# FortiGate configuration
+ # FortiGate configuration
     def upload_config(self, config_content):
         self.logger.info("Upload configuration file by HTTP.")
         b_connected = self.connect_to_fgt_http(check_get=True)
         if not b_connected:
             self.logger.error(f"Could not http connect to FortiGate {self.fgt_private_ip}")
-            self.return_json['StatusCode'] = 500
-            self.return_json['FunctionError'] = f"Could not http connect to FortiGate {self.fgt_private_ip}"
+            self.return_json['ErrorMsg'] = f"Could not http connect to FortiGate {self.fgt_private_ip}"
             return False
         url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/monitor/system/config-script/upload"
         header = {
@@ -172,7 +176,7 @@ class FgtConf:
         response.close()
         return fgt_return_status
 
-# using http
+ # using http
     def connect_to_fgt_http(self, check_get=False, max_loop=10):
         self.logger.info("Check connection to FortiGate instance.")
         login_succ = False
@@ -303,10 +307,245 @@ class FgtConf:
             self.logger.info(f"Could not get http return status, try again. Error {err}")
         return fgt_return_status
 
+class Dynamodb:
+    def __init__(self):
+        self.logger = logging.getLogger("lambda")
+        self.logger.setLevel(logging.INFO)
+        self.dynamodb_table_name = os.getenv("dynamodb_table_name")
+        self.dydb_endpoint_url = os.getenv("dydb_endpoint_url")
+        self.dynamodb_client = boto3.client(
+            service_name = "dynamodb",
+            endpoint_url = "https://" + self.dydb_endpoint_url
+        )
+        self.return_json = {
+            'ErrorMsg': None,
+            'ResponseContent': None
+        }
+
+    def main(self, event):
+        self.logger.info(f"Start internal lambda function for DynamoDB service.")
+        operation = event["operation"]
+        parameters = event["parameters"]
+        if operation == "get_item":
+            missed_var_list = Helper.check_missed_var(["category", "attributes"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            rst = self.get_item_from_dydb(parameters["category"], parameters["attributes"])
+            self.return_json['ResponseContent'] = rst
+        elif operation == "put_item":
+            missed_var_list = Helper.check_missed_var(["category", "attribute_name", "attribute_content"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            b_succ = self.put_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            if not b_succ:
+                self.return_json['ErrorMsg'] = "Could not put item to DynamoDB."
+        elif operation == "add_item":
+            missed_var_list = Helper.check_missed_var(["category", "attribute_name", "attribute_content"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            b_succ = self.add_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            if not b_succ:
+                self.return_json['ErrorMsg'] = "Could not add item to DynamoDB."
+        elif operation == "remove_item":
+            missed_var_list = Helper.check_missed_var(["category", "attribute_name", "attribute_content"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            b_succ = self.remove_item_from_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            if not b_succ:
+                self.return_json['ErrorMsg'] = "Could not remove item from DynamoDB."
+        else:
+            self.return_json['ErrorMsg'] = f"Unknown operation {operation}."
+
+    def get_item_from_dydb(self, category, attributes):
+        rst = {}
+        try:
+            response = self.dynamodb_client.get_item(
+                TableName=self.dynamodb_table_name,
+                Key={
+                    'Category': {
+                        'S': category,
+                    }
+                },
+                AttributesToGet=attributes
+            )
+            resp_content = response.get("Item")
+            for attr_name in attributes:
+                if attr_name in resp_content:
+                    rst[attr_name] = self.convert_aws_dydb_to_normal_format(resp_content[attr_name])
+        except Exception as err:
+            self.logger.error(f"Could not get item from Dynamo DB table: {err}")
+        return rst
+
+    def put_item_to_dydb(self, category, attribute_name, attribute_content):
+        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+        if not aws_format_content:
+            self.logger.info(f"Attribute content is empty: {attribute_content}")
+            return self.remove_item_from_dydb(category, attribute_name, attribute_content)
+        b_succ= False
+        try:
+            response = self.dynamodb_client.update_item(
+                TableName=self.dynamodb_table_name,
+                Key={
+                    'Category': {
+                        'S': category,
+                    }
+                },
+                AttributeUpdates={
+                    attribute_name: {
+                        'Value': aws_format_content
+                    }
+                })
+            b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not update item in Dynamo DB table: {err}")
+        return b_succ
+
+    def add_item_to_dydb(self, category, attribute_name, attribute_content):
+        if type(attribute_content) is list:
+            attribute_content = set(attribute_content)
+        if type(attribute_content) not in [set, int, float]:
+            self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
+            return False
+        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+        if not aws_format_content:
+            self.logger.info(f"Attribute content is empty: {attribute_content}")
+            return False
+        b_succ= False
+        try:
+            response = self.dynamodb_client.update_item(
+                TableName=self.dynamodb_table_name,
+                Key={
+                    'Category': {
+                        'S': category,
+                    }
+                },
+                AttributeUpdates={
+                    attribute_name: {
+                        'Value': aws_format_content,
+                        'Action': 'ADD'
+                    }
+                })
+            b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not add item in Dynamo DB table: {err}")
+        return b_succ
+
+    def remove_item_from_dydb(self, category, attribute_name, attribute_content):
+        if type(attribute_content) is list:
+            attribute_content = set(attribute_content)
+        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+        if not aws_format_content:
+            self.logger.info(f"Attribute content is empty: {attribute_content}")
+            return False
+        b_succ = False
+        attribute_value = {
+            'Action': 'DELETE'
+        }
+        if aws_format_content:
+            attribute_value["Value"] = aws_format_content
+        try:
+            response = self.dynamodb_client.update_item(
+                TableName=self.dynamodb_table_name,
+                Key={
+                    'Category': {
+                        'S': category,
+                    }
+                },
+                AttributeUpdates={
+                    attribute_name: attribute_value
+                }
+            )
+            b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
+        return b_succ
+
+    def convert_to_aws_dydb_format(self, input_value):
+        rst = {}
+        if input_value == None:
+            return rst
+        aws_datatype = ""
+        content = input_value
+        input_type = type(input_value)
+        if input_type is str:
+            aws_datatype = "S"
+        elif input_type is int or input_type is float:
+            aws_datatype = "N"
+            content = str(input_value)
+        elif input_type is bool:
+            aws_datatype = "BOOL"
+        elif input_type is set:
+            if not input_value:
+                return rst
+            for ele in input_value:
+                ele_type = type(ele)
+                break
+            if ele_type is str:
+                aws_datatype = "SS"
+                content = list(input_value)
+            elif ele_type is int or ele_type is float:
+                aws_datatype = "NS"
+                content = [str(e) for e in input_value]
+        elif input_type is list:
+            if not input_value:
+                return {
+                    "L": []
+                }
+            aws_datatype = "L"
+            content = [self.convert_to_aws_dydb_format(e) for e in input_value]
+        elif input_type is dict:
+            if not input_value:
+                return {
+                    "M": {}
+                }
+            aws_datatype = "M"
+            content = {}
+            for k, v in input_value.items():
+                content[k] = self.convert_to_aws_dydb_format(v)
+
+        rst = {
+            aws_datatype: content
+        }
+        return rst
+
+    def convert_aws_dydb_to_normal_format(self, input_dict):
+        if not input_dict:
+            return input_dict
+        rst = None
+        for v_type, v_content in input_dict.items():
+            if v_type == "M":
+                rst = {}
+                for k, v in v_content.items():
+                    rst[k] = self.convert_aws_dydb_to_normal_format(v)
+            elif v_type == "L":
+                rst = [self.convert_aws_dydb_to_normal_format(e) for e in v_content]
+            elif v_type == "NULL" and v_content:
+                rst = None
+            else:
+                rst = v_content
+            break
+        return rst
+
  
 def lambda_handler(event, context):
+    service = event["service"]
+    response = None
     ## FortiGate configuration operations
-    fgtObject = FgtConf()
-    fgtObject.main(event)
-
-    return fgtObject.return_json
+    if service == "fgt_vm":
+        fgtObject = FgtConf()
+        fgtObject.main(event)
+        response = fgtObject.return_json
+    elif service == "dynamodb":
+        dydbObject = Dynamodb()
+        dydbObject.main(event)
+        response = dydbObject.return_json
+    else:
+        response = {
+            'ErrorMsg': f"Unknown service: {service}.",
+            'ResponseContent': None
+        }
+    return response

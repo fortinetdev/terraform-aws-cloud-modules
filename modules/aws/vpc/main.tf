@@ -1,6 +1,7 @@
 locals {
-  vpc_id = var.existing_vpc != null ? data.aws_vpc.vpc[0].id : var.vpc_name == "" ? null : aws_vpc.vpc[0].id
-  igw    = var.existing_igw != null ? data.aws_internet_gateway.igw[0] : var.igw_name == "" ? null : aws_internet_gateway.igw[0]
+  vpc    = var.existing_vpc != null ? data.aws_vpc.vpc[0] : var.vpc_name == "" ? null : aws_vpc.vpc[0]
+  vpc_id = local.vpc.id
+  igw_id = var.existing_igw != null || var.existing_vpc != null ? data.aws_internet_gateway.igw[0].id : var.igw_name == "" ? null : aws_internet_gateway.igw[0].id
 }
 
 resource "null_resource" "validation_check_vpc" {
@@ -33,7 +34,7 @@ resource "aws_vpc" "vpc" {
   assign_generated_ipv6_cidr_block = var.assign_generated_ipv6_cidr_block
   tags = merge(
     {
-      Name = var.vpc_name
+      Name = "${var.module_prefix}${var.vpc_name}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "vpc", {})
@@ -42,24 +43,28 @@ resource "aws_vpc" "vpc" {
 
 ## IGW
 data "aws_internet_gateway" "igw" {
-  count = var.existing_igw == null ? 0 : 1
+  count = var.existing_igw != null || var.existing_vpc != null ? 1 : 0
 
-  internet_gateway_id = lookup(var.existing_igw, "id", null)
-  tags = merge(
+  internet_gateway_id = var.existing_igw == null ? null : lookup(var.existing_igw, "id", null)
+  tags = var.existing_igw == null ? null : merge(
     contains(keys(var.existing_igw), "name") ? {
       Name = var.existing_igw.name
     } : {},
     lookup(var.existing_igw, "tags", {})
   )
+  filter {
+    name   = "attachment.vpc-id"
+    values = [local.vpc_id]
+  }
 }
 
 resource "aws_internet_gateway" "igw" {
-  count = var.existing_igw == null && var.igw_name != "" ? 1 : 0
+  count = var.existing_igw == null && var.existing_vpc == null && var.igw_name != "" ? 1 : 0
 
   vpc_id = local.vpc_id
   tags = merge(
     {
-      Name = var.igw_name
+      Name = "${var.module_prefix}${var.igw_name}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "igw", {})
@@ -67,10 +72,17 @@ resource "aws_internet_gateway" "igw" {
 }
 
 ## Security groups
+data "aws_security_group" "secgrp" {
+  for_each = toset(var.existing_security_groups)
+
+  name   = each.value
+  vpc_id = local.vpc_id
+}
+
 resource "aws_security_group" "secgrp" {
   for_each = var.security_groups
 
-  name        = each.key
+  name        = "${var.module_prefix}${each.key}"
   description = lookup(each.value, "description", null)
   vpc_id      = local.vpc_id
   dynamic "ingress" {
@@ -121,7 +133,7 @@ resource "aws_subnet" "subnets" {
   map_public_ip_on_launch = lookup(each.value, "map_public_ip_on_launch", null)
   tags = merge(
     {
-      Name = each.key
+      Name = "${var.module_prefix}${each.key}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "subnet", {})

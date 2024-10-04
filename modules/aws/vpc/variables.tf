@@ -43,6 +43,7 @@ variable "vpc_name" {
 variable "vpc_cidr_block" {
   description = "The IPv4 CIDR block for the VPC."
   type        = string
+  default     = ""
 }
 
 variable "enable_dns_support" {
@@ -115,6 +116,12 @@ variable "existing_igw" {
 }
 
 ## Security groups
+variable "existing_security_groups" {
+  description = "Existing Security group names."
+  type        = list(string)
+  default     = []
+}
+
 variable "security_groups" {
   description = <<-EOF
         Security groups configuration for the target VPC.
@@ -309,4 +316,10 @@ variable "tags" {
     ])
     error_message = "One or more argument(s) can not be identified, available options: general, vpc, igw, security_group, subnet."
   }
+}
+
+variable "module_prefix" {
+  description = "Prefix that will be used in the whole module."
+  type        = string
+  default     = ""
 }

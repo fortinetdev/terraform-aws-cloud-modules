@@ -1,3 +1,7 @@
+output "vpc" {
+  value = local.vpc
+}
+
 output "vpc_id" {
   value = local.vpc_id
 }
@@ -8,17 +12,34 @@ output "subnets" {
     subnet.tags.Name => {
       "id"                = subnet.id
       "availability_zone" = subnet.availability_zone
+      "cidr_block"        = subnet.cidr_block
     }
   }
 }
 
-output "igw" {
-  value = local.igw
+output "has_igw" {
+  value = !(var.existing_igw == null && var.existing_vpc == null && var.igw_name == "")
+}
+
+output "igw_id" {
+  value = local.igw_id
 }
 
 output "security_group" {
-  value = {
-    for secgrp in aws_security_group.secgrp :
-    secgrp.name => secgrp.id
-  }
+  value = merge(
+    {
+      for secgrp in aws_security_group.secgrp :
+      secgrp.name => {
+        prefix_name = secgrp.name
+        id          = secgrp.id
+      }
+    },
+    {
+      for secgrp in data.aws_security_group.secgrp :
+      secgrp.name => {
+        prefix_name = "${var.module_prefix}${secgrp.name}"
+        id          = secgrp.id
+      }
+    }
+  )
 }

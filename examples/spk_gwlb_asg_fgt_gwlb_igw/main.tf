@@ -5,41 +5,66 @@ provider "aws" {
 }
 
 locals {
+  module_prefix        = var.module_prefix == "" ? "" : "${var.module_prefix}-"
+  internal_port_prefix = var.fgt_intf_mode == "1-arm" ? "${local.module_prefix}fgt_login_" : "${local.module_prefix}fgt_internal_"
   # Security VPC subnets
-  subnet_cidr_block    = var.subnet_cidr_block == "" ? var.vpc_cidr_block : var.subnet_cidr_block
-  cidr_split           = split("/", local.subnet_cidr_block)
-  base_ip              = split(".", element(local.cidr_split, 0))
-  base_netmask         = element(local.cidr_split, 1) == "" ? 99 : tonumber(element(local.cidr_split, 1))
-  step_num             = local.base_netmask <= 19 ? 1 : 16
-  subnet_netmask       = local.step_num == 1 ? 24 : 28
-  subnet_prefixs       = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
-  internal_port_prefix = var.fgt_intf_mode == "1-arm" ? "fgt_login_" : "fgt_internal_"
-  create_subnets = var.existing_subnets != null ? {} : (var.subnets != null && var.subnets != {}) ? var.subnets : local.base_netmask > 24 ? {} : merge([
-    for az_i in range(length(var.availability_zones)) : merge([
-      for sn_i in range(length(local.subnet_prefixs)) : {
-        "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
-          cidr_block        = "${local.base_ip[0]}.${local.base_ip[1]}.%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}.%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
-          availability_zone = "${var.availability_zones[az_i]}"
-        }
-      } if local.subnet_prefixs[sn_i] != ""
-    ]...)
-  ]...)
+  subnet_cidr_block = var.subnet_cidr_block == "" ? var.vpc_cidr_block : var.subnet_cidr_block
+  cidr_split        = split("/", local.subnet_cidr_block)
+  base_ip           = split(".", element(local.cidr_split, 0))
+  base_netmask      = element(local.cidr_split, 1) == "" ? 99 : tonumber(element(local.cidr_split, 1))
+  step_num          = local.base_netmask <= 19 ? 1 : 16
+  subnet_netmask    = local.step_num == 1 ? 24 : 28
+  subnet_prefixs    = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
+  create_subnets = var.existing_subnets != null ? {} : (var.subnets != null && var.subnets != {}) ? var.subnets : local.base_netmask > 24 ? {} : merge(
+    merge([
+      for az_i in range(length(var.availability_zones)) : merge([
+        for sn_i in range(length(local.subnet_prefixs)) : {
+          "${local.subnet_prefixs[sn_i]}${var.availability_zones[az_i]}" = {
+            cidr_block = join(".",
+              [
+                "${local.base_ip[0]}",
+                "${local.base_ip[1]}",
+                "%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + az_i * length(local.subnet_prefixs) + sn_i)}%{else}${local.base_ip[2]}%{endif}",
+                "%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + (az_i * length(local.subnet_prefixs) + sn_i) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
+              ]
+            )
+            availability_zone = "${var.availability_zones[az_i]}"
+          }
+        } if local.subnet_prefixs[sn_i] != ""
+      ]...)
+    ]...),
+    var.enable_privatelink_dydb ? {
+      "privatelink_ep" = {
+        cidr_block = join(".",
+          [
+            "${local.base_ip[0]}",
+            "${local.base_ip[1]}",
+            "%{if local.step_num == 1}${tostring(tonumber(local.base_ip[2]) + (length(var.availability_zones) - 1) * length(local.subnet_prefixs) + length(local.subnet_prefixs))}%{else}${local.base_ip[2]}%{endif}",
+            "%{if local.step_num != 1}${tostring(tonumber(local.base_ip[3]) + ((length(var.availability_zones) - 1) * length(local.subnet_prefixs) + length(local.subnet_prefixs)) * 16)}%{else}${local.base_ip[2]}%{endif}/${local.subnet_netmask}"
+          ]
+        )
+        availability_zone = "${var.availability_zones[1]}"
+      }
+    } : {}
+  )
 
   # Subnets
-  subnets = var.existing_subnets != null ? var.existing_subnets : module.security-vpc.subnets
+  subnets = var.existing_subnets == null ? module.security-vpc.subnets : {
+    for k, v in var.existing_subnets : "${local.module_prefix}${k}" => v
+  }
 
   # Security VPC route table
   route_tables = {
-    "secvpc" = (module.security-vpc.igw == null ||
+    "secvpc" = (module.security-vpc.has_igw == false ||
       length([for k, v in local.create_subnets : k if startswith(k, "fgt_login_")]) == 0) ? {} : {
       fgt_login = {
         routes = {
           local_pc = {
             destination_cidr_block = "0.0.0.0/0"
-            gateway_id             = module.security-vpc.igw.id
+            gateway_id             = module.security-vpc.igw_id
           }
         },
-        rt_association_subnets = [for k, v in local.create_subnets : local.subnets[k]["id"] if startswith(k, "fgt_login_")]
+        rt_association_subnets = [for k, v in local.create_subnets : local.subnets["${local.module_prefix}${k}"]["id"] if startswith(k, "fgt_login_")]
       }
     }
   }
@@ -63,7 +88,7 @@ resource "null_resource" "validation_check_subnet_cidr" {
   count = var.existing_subnets == null && var.subnets == null && local.subnet_cidr_block != "" && local.base_netmask > 24 ? (
     <<EOT
     "Auto set subnet do not support netmask larger then 24. Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
-    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\". Specify the target subnet you needed." 
+    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"privatelink_\". Specify the target subnet you needed." 
   EOT
   ) : 0
 }
@@ -72,13 +97,15 @@ resource "null_resource" "validation_check_subnet_cidr" {
 module "security-vpc" {
   source = "../../modules/aws/vpc"
 
-  existing_vpc    = var.existing_security_vpc
-  existing_igw    = var.existing_igw
-  vpc_name        = var.vpc_name
-  igw_name        = var.igw_name
-  security_groups = var.security_groups
-  vpc_cidr_block  = var.vpc_cidr_block
-  subnets         = local.create_subnets
+  existing_vpc             = var.existing_security_vpc
+  existing_igw             = var.existing_igw
+  existing_security_groups = var.existing_security_groups
+  vpc_name                 = var.vpc_name
+  igw_name                 = var.igw_name
+  security_groups          = var.security_groups
+  vpc_cidr_block           = var.vpc_cidr_block
+  subnets                  = local.create_subnets
+  module_prefix            = local.module_prefix
 
   tags = {
     general = merge(
@@ -109,6 +136,11 @@ module "security_route_table" {
 }
 
 # Create FortiGate Auto Scaling group
+locals {
+  secgrp_idmap_with_prefixname = {
+    for k, v in module.security-vpc.security_group : v.prefix_name => v.id
+  }
+}
 module "fgt_asg" {
   source   = "../../modules/fortigate/fgt_asg"
   for_each = var.asgs
@@ -148,29 +180,35 @@ module "fgt_asg" {
   scale_policies        = lookup(each.value, "scale_policies", {})
   create_dynamodb_table = lookup(each.value, "create_dynamodb_table", null)
   dynamodb_table_name   = lookup(each.value, "dynamodb_table_name", null)
+  dynamodb_privatelink = var.enable_privatelink_dydb ? {
+    vpc_id                      = module.security-vpc.vpc_id
+    region                      = var.region
+    privatelink_subnet_ids      = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}privatelink_")]
+    privatelink_security_groups = [for sg_name in each.value.privatelink_security_groups : local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg_name}"]]
+  } : null
   network_interfaces = jsondecode(
     var.fgt_intf_mode == "1-arm" ? jsonencode({
       mgmt = {
         device_index      = 0
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
         enable_public_ip  = true
         to_gwlb           = true
         source_dest_check = true
-        security_groups   = [module.security-vpc.security_group[each.value.intf_security_group["login_port"]]]
+        security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
       }
       }) : jsonencode({
       mgmt = {
         device_index      = 1
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_login_") }
+        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
         enable_public_ip  = true
         source_dest_check = true
-        security_groups   = [module.security-vpc.security_group[each.value.intf_security_group["login_port"]]]
+        security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
       },
       internal_traffic = {
         device_index    = 0
         to_gwlb         = true
-        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "fgt_internal_") }
-        security_groups = [module.security-vpc.security_group[each.value.intf_security_group["internal_port"]]]
+        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_internal_") }
+        security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["internal_port"]}"]]
       }
     })
   )
@@ -181,6 +219,7 @@ module "fgt_asg" {
   asg_gwlb_tgp             = module.security-vpc-gwlb.gwlb_tgp == null ? null : [module.security-vpc-gwlb.gwlb_tgp.arn]
   lambda_timeout           = 500
   az_name_map              = local.az_name_map
+  module_prefix            = local.module_prefix
   tags = {
     general = merge(
       var.general_tags,
@@ -202,7 +241,7 @@ module "fgt_asg" {
 resource "aws_cloudwatch_metric_alarm" "hybrid_asg" {
   for_each = var.cloudwatch_alarms
 
-  alarm_name          = each.key
+  alarm_name          = "${local.module_prefix}${each.key}"
   comparison_operator = lookup(each.value, "comparison_operator", null)
   evaluation_periods  = lookup(each.value, "evaluation_periods", null)
   metric_name         = lookup(each.value, "metric_name", null)
@@ -210,7 +249,9 @@ resource "aws_cloudwatch_metric_alarm" "hybrid_asg" {
   period              = lookup(each.value, "period", null)
   statistic           = lookup(each.value, "statistic", null)
   threshold           = lookup(each.value, "threshold", null)
-  dimensions          = lookup(each.value, "dimensions", null)
+  dimensions = lookup(each.value, "dimensions", null) == null ? null : {
+    for k, v in each.value["dimensions"] : k => "${k == "AutoScalingGroupName" ? "${local.module_prefix}${v}" : v}"
+  }
   alarm_description   = lookup(each.value, "alarm_description", null)
   datapoints_to_alarm = lookup(each.value, "datapoints_to_alarm", null)
   alarm_actions = (
@@ -255,20 +296,22 @@ module "security-vpc-gwlb" {
   gwlb_ln_name         = "gwlb-ln"
   gwlb_ep_service_name = var.gwlb_ep_service_name
   gwlb_endps           = local.gwlb_endps
+  module_prefix        = local.module_prefix
   depends_on = [
     module.security-vpc
   ]
 }
 
-# Create VPC route table of traffic to Internet Gateway in subnets of Gateway Loadbalancer Endpoint under Spoke VPC
+# Create VPC route tables under Spoke VPC
 locals {
   spkvpc_rt = merge([
     for vpc_name, vpc_content in var.spk_vpc : merge([
       for rt_name, rt_content in vpc_content.route_tables : {
-        "${rt_name}" = merge(
+        "${vpc_name}_${rt_name}" = merge(
           rt_content,
           {
-            vpc_id = vpc_content.vpc_id
+            rt_name = rt_name
+            vpc_id  = vpc_content.vpc_id
           }
         )
       }
@@ -281,7 +324,7 @@ module "spkvpc-rt" {
 
   for_each    = local.spkvpc_rt
   vpc_id      = each.value["vpc_id"]
-  rt_name     = each.key
+  rt_name     = each.value["rt_name"]
   existing_rt = lookup(each.value, "existing_rt", null)
   routes = lookup(each.value, "routes", false) == false ? null : {
     for r_name, r_content in each.value.routes : r_name => merge(

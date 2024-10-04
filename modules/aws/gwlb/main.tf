@@ -18,7 +18,7 @@ data "aws_lb" "gwlb" {
 resource "aws_lb" "gwlb" {
   count = var.existing_gwlb == null && var.gwlb_name != "" ? 1 : 0
 
-  name                             = var.gwlb_name
+  name                             = "${var.module_prefix}${var.gwlb_name}"
   load_balancer_type               = "gateway"
   enable_cross_zone_load_balancing = var.enable_cross_zone_load_balancing
   subnets                          = var.subnets
@@ -44,7 +44,7 @@ data "aws_lb_target_group" "gwlb_tgp" {
 resource "aws_lb_target_group" "gwlb_tgp" {
   count = var.existing_gwlb_tgp == null && var.tgp_name != "" ? 1 : 0
 
-  name                 = var.tgp_name
+  name                 = "${var.module_prefix}${var.tgp_name}"
   vpc_id               = var.vpc_id
   target_type          = var.target_type
   deregistration_delay = var.deregistration_delay
@@ -88,7 +88,7 @@ resource "aws_lb_listener" "gwlb_ln" {
 
   tags = merge(
     {
-      Name = var.gwlb_ln_name
+      Name = "${var.module_prefix}${var.gwlb_ln_name}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "gwlb_ln", {})
@@ -100,7 +100,7 @@ data "aws_network_interface" "gwlb_intfs" {
   count = local.gwlb == null ? 0 : length(var.subnets)
   filter {
     name   = "description"
-    values = ["ELB gwy/${aws_lb.gwlb[0].name}/*"]
+    values = ["ELB gwy/${local.gwlb.name}/*"]
   }
   filter {
     name   = "vpc-id"
@@ -114,6 +114,9 @@ data "aws_network_interface" "gwlb_intfs" {
     name   = "subnet-id"
     values = [var.subnets[count.index]]
   }
+  depends_on = [
+    aws_lb.gwlb
+  ]
 }
 
 ## Gateway Load Balancer Endpoint
@@ -138,7 +141,7 @@ resource "aws_vpc_endpoint_service" "gwlb_ep_service" {
   gateway_load_balancer_arns = [local.gwlb.arn]
   tags = merge(
     {
-      Name = var.gwlb_ep_service_name
+      Name = "${var.module_prefix}${var.gwlb_ep_service_name}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "gwlb_ep_service", {})

@@ -2,8 +2,6 @@ import os
 import json
 import logging
 import time
-import base64
-import urllib
 import requests
 import re
 import uuid
@@ -12,6 +10,27 @@ import boto3
 import botocore
 from botocore.exceptions import ClientError
 
+class Helper:
+    def set_to_list(input_content):
+        if not input_content:
+            return
+        input_type = type(input_content)
+        if input_type in [str, int, bool]:
+            return
+        elif input_type is list:
+            for i in range(len(input_content)):
+                item = input_content[i]
+                if type(item) is set:
+                    item = list(item)
+                    input_content[i] = item
+                Helper.set_to_list(item)
+        elif input_type is dict:
+            for k, v in input_content.items():
+                if type(v) is set:
+                    v = list(v)
+                    input_content[k] = v
+                Helper.set_to_list(v)
+
 class NetworkInterface:
     def __init__(self):
         self.logger = logging.getLogger("network_interface")
@@ -19,8 +38,6 @@ class NetworkInterface:
         self.ec2_client = boto3.client("ec2")
         self.s3_client = boto3.client("s3")
         self.s3_bucket_name = os.getenv("lic_s3_name")
-        self.dynamodb_client = boto3.client("dynamodb")
-        self.dynamodb_table_name = os.getenv("dynamodb_table_name")
         self.intf_track_file_name = "intf_track.json"
 
     def main(self, event):
@@ -428,173 +445,12 @@ class NetworkInterface:
                 b_exist = False
         return b_exist
 
- # AWS Dynamo DB operations
-    def get_item_from_dydb(self, category, attributes):
-        rst = None
-        try:
-            response = self.dynamodb_client.get_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributesToGet=attributes)
-            rst = response.get("Item")
-        except Exception as err:
-            self.logger.error(f"Could not get item from Dynamo DB table: {err}")
-        return rst
-
-    def put_item_to_dydb(self, category, attribute_name, attribute_content):
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        if not aws_format_content:
-            self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return self.remove_item_from_dydb(category, attribute_name, attribute_content)
-        b_succ= False
-        try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content
-                    }
-                })
-            b_succ = True
-        except Exception as err:
-            self.logger.error(f"Could not update item in Dynamo DB table: {err}")
-        return b_succ
-
-    def add_item_to_dydb(self, category, attribute_name, attribute_content):
-        if type(attribute_content) not in [set, int, float]:
-            self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
-            return False
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        if not aws_format_content:
-            self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return False
-        b_succ= False
-        try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content,
-                        'Action': 'ADD'
-                    }
-                })
-            b_succ = True
-        except Exception as err:
-            self.logger.error(f"Could not add item in Dynamo DB table: {err}")
-        return b_succ
-
-    def remove_item_from_dydb(self, category, attribute_name, attribute_content):
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        b_succ = False
-        attribute_value = {
-            'Action': 'DELETE'
-        }
-        if aws_format_content:
-            attribute_value["Value"] = aws_format_content
-        try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributeUpdates={
-                    attribute_name: attribute_value
-                }
-            )
-            b_succ = True
-        except Exception as err:
-            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
-        return b_succ
-
-    def convert_to_aws_dydb_format(self, input_value):
-        rst = {}
-        if input_value == None:
-            return rst
-        aws_datatype = ""
-        content = input_value
-        input_type = type(input_value)
-        if input_type is str:
-            aws_datatype = "S"
-        elif input_type is int or input_type is float:
-            aws_datatype = "N"
-            content = str(input_value)
-        elif input_type is bool:
-            aws_datatype = "BOOL"
-        elif input_type is set:
-            if not input_value:
-                return rst
-            for ele in input_value:
-                ele_type = type(ele)
-                break
-            if ele_type is str:
-                aws_datatype = "SS"
-                content = list(input_value)
-            elif ele_type is int or ele_type is float:
-                aws_datatype = "NS"
-                content = [str(e) for e in input_value]
-        elif input_type is list:
-            if not input_value:
-                return {
-                    "L": []
-                }
-            aws_datatype = "L"
-            content = [self.convert_to_aws_dydb_format(e) for e in input_value]
-        elif input_type is dict:
-            if not input_value:
-                return {
-                    "M": {}
-                }
-            aws_datatype = "M"
-            content = {}
-            for k, v in input_value.items():
-                content[k] = self.convert_to_aws_dydb_format(v)
-
-        rst = {
-            aws_datatype: content
-        }
-        return rst
-
-    def convert_aws_dydb_to_normal_format(self, input_dict):
-        if not input_dict:
-            return input_dict
-        rst = None
-        for v_type, v_content in input_dict.items():
-            if v_type == "M":
-                rst = {}
-                for k, v in v_content.items():
-                    rst[k] = self.convert_aws_dydb_to_normal_format(v)
-            elif v_type == "L":
-                rst = [self.convert_aws_dydb_to_normal_format(e) for e in v_content]
-            elif v_type == "NULL" and v_content:
-                rst = None
-            else:
-                rst = v_content
-            break
-        return rst
-
 class FgtConf:
     def __init__(self, event):
         self.logger = logging.getLogger("fgt_config")
         self.logger.setLevel(logging.INFO)
         self.ec2_client = boto3.client("ec2")
         self.s3_client = boto3.client("s3")
-        self.dynamodb_client = boto3.client("dynamodb")
         self.lambda_client = boto3.client("lambda")
 
         self.logger.info(f"Do FGT config.")
@@ -603,7 +459,10 @@ class FgtConf:
         self.detail_type = event["detail-type"]
         self.cookie = {}
         self.lic_track_file_name = "asg-fgt-lic-track.json"
-        self.dynamodb_table_name = os.getenv("dynamodb_table_name")
+        self.enable_privatelink_dydb = os.getenv("enable_privatelink_dydb") == "true"
+        if not self.enable_privatelink_dydb:
+            self.dynamodb_client = boto3.client("dynamodb")
+            self.dynamodb_table_name = os.getenv("dynamodb_table_name")
         self.enable_fgt_system_autoscale = os.getenv("enable_fgt_system_autoscale") == "true"
         self.fgt_system_autoscale_psksecret = os.getenv("fgt_system_autoscale_psksecret")
         self.fgt_login_port_number = os.getenv("fgt_login_port_number")
@@ -735,12 +594,14 @@ class FgtConf:
             p_port = f"port1"
         return p_ip, p_port
 
-# Invode lambda function
+# Invoke lambda function
     def invoke_lambda(self, payload, invocation_type=""):
         b_succ= False
+        rst = {}
         if invocation_type == "":
             invocation_type = 'RequestResponse'
         try:
+            Helper.set_to_list(payload)
             response = self.lambda_client.invoke(
                 FunctionName = self.internal_lambda_name,
                 InvocationType = invocation_type,
@@ -748,14 +609,21 @@ class FgtConf:
             )
             if "StatusCode" in response and response["StatusCode"] in [200, 202, 204]:
                 b_succ = True
+                payload_contant = response["Payload"].read()
+                if payload_contant:
+                    payload_contant_json = json.loads(payload_contant.decode("utf-8"))
+                    if payload_contant_json["ErrorMsg"]:
+                        self.logger.error("Invoke lambda function response error msg: {}".format(payload_contant_json["ErrorMsg"]))
+                    else:
+                        rst = payload_contant_json["ResponseContent"]
             else:
                 errmsg = ""
                 if "FunctionError" in response:
                     errmsg = response["FunctionError"]
-                self.logger.error(f"Invoke lambda function failed. {errmsg}")
+                self.logger.error(f"Invoke lambda function failed: {errmsg}")
         except Exception as err:
             self.logger.error(f"Could not invoke lambda function, error: {err}")
-        return b_succ
+        return b_succ, rst
     
 # License
     def upload_license(self, fgt_private_ip, fgt_vm_id):
@@ -768,14 +636,15 @@ class FgtConf:
         # Upload license
         if license_type == "token":
             payload = {
-                "private_ip" : fgt_private_ip,
+                "service" : "fgt_vm",
                 "operation" : "upload_license",
                 "parameters" : {
+                    "private_ip" : fgt_private_ip,
                     "license_type": license_type,
                     "license_content": license_content
                 }
             }
-            b_succ = self.invoke_lambda(payload)
+            b_succ, response = self.invoke_lambda(payload)
             if b_succ:
                 used_sn_map = self.get_used_sn_map()
                 used_sn_map[fgt_vm_id] = sn_or_file_name
@@ -786,14 +655,15 @@ class FgtConf:
         elif license_type == "file":
             lic_file_content = self.get_lic_file_content(license_content)
             payload = {
-                "private_ip" : fgt_private_ip,
+                "service" : "fgt_vm",
                 "operation" : "upload_license",
                 "parameters" : {
+                    "private_ip" : fgt_private_ip,
                     "license_type": license_type,
                     "license_content": lic_file_content
                 }
             }
-            b_succ = self.invoke_lambda(payload)
+            b_succ, response = self.invoke_lambda(payload)
             # Update license track file if upload license successfully
             if b_succ:
                 self.logger.info("Upload license file success.")
@@ -843,21 +713,19 @@ class FgtConf:
             return "", "", ""
         # Get serial number and generate vm token
         dydb_items = self.get_item_from_dydb("fortiflex", ["available_sn_list"])
-        if dydb_items:
-            if "available_sn_list" in dydb_items:
-                available_sn_list = self.convert_aws_dydb_to_normal_format(dydb_items["available_sn_list"])
-                if available_sn_list:
-                    for cur_sn in available_sn_list:
-                        b_succ = self.reactivate_sn(cur_sn, oauth_token)
-                        if not b_succ:
-                            continue
-                        vm_token = self.generate_vm_token(cur_sn, oauth_token)
-                        if vm_token:
-                            self.remove_available_sn({cur_sn})
-                            return "token", vm_token, cur_sn
-                else:
-                    self.logger.info("Could not get available serial number.")
-        
+        available_sn_list = dydb_items.get("available_sn_list", [])
+        if available_sn_list:
+            for cur_sn in available_sn_list:
+                b_succ = self.reactivate_sn(cur_sn, oauth_token)
+                if not b_succ:
+                    continue
+                vm_token = self.generate_vm_token(cur_sn, oauth_token)
+                if vm_token:
+                    self.remove_available_sn({cur_sn})
+                    return "token", vm_token, cur_sn
+        else:
+            self.logger.info("Could not get available serial number.")
+
         return "", "", ""
 
     def update_lic_track_file(self, lic_track_dict):
@@ -1209,10 +1077,7 @@ class FgtConf:
    # Token related
     def get_fortiflex_oauth_token(self):
         dydb_items = self.get_item_from_dydb("fortiflex", ["oauth_token"])
-        oauth_token = ""
-        if dydb_items:
-            if "oauth_token" in dydb_items:
-                oauth_token = self.convert_aws_dydb_to_normal_format(dydb_items["oauth_token"])
+        oauth_token = dydb_items.get("oauth_token", "")
         if oauth_token:
             b_valid, expires_in = self.verify_oauth_token(oauth_token)
             if b_valid:
@@ -1238,10 +1103,7 @@ class FgtConf:
     
     def get_fortiflex_refresh_token(self):
         dydb_items = self.get_item_from_dydb("fortiflex", ["oauth_refresh_token"])
-        oauth_refresh_token = ""
-        if dydb_items:
-            if "oauth_refresh_token" in dydb_items:
-                oauth_refresh_token = self.convert_aws_dydb_to_normal_format(dydb_items["oauth_refresh_token"])
+        oauth_refresh_token = dydb_items.get("oauth_refresh_token", "")
         return oauth_refresh_token
 
     def update_fortiflex_refresh_token(self, oauth_refresh_token):
@@ -1382,10 +1244,7 @@ class FgtConf:
         # Update all_sn_list in Dynamo DB
         dydb_all_sn_list = []
         dydb_items = self.get_item_from_dydb("fortiflex", ["all_sn_list"])
-        if dydb_items:
-            if "all_sn_list" in dydb_items:
-                dydb_all_sn_list = self.convert_aws_dydb_to_normal_format(dydb_items["all_sn_list"])
-        dydb_all_sn_list = set(dydb_all_sn_list)
+        dydb_all_sn_list = set(dydb_items.get("all_sn_list", []))
         if all_sn_list != dydb_all_sn_list:
             # Update all_sn_list
             self.put_item_to_dydb("fortiflex", "all_sn_list", all_sn_list)
@@ -1434,7 +1293,9 @@ class FgtConf:
                         self.logger.error(f"Could not get sefial numbers by config id {configid}, error msg: {err_msg}")
                     return []
                 for ele in response_json["entitlements"]:
-                    if ele["status"] in {"ACTIVE", "PENDING", "STOPPED"}:
+                    if ele["status"] in {"ACTIVE"} and ele["tokenStatus"] == "NOTUSED":
+                        sn_list.append(ele["serialNumber"])
+                    elif ele["status"] in {"STOPPED", "PENDING"}:
                         sn_list.append(ele["serialNumber"])
             else:
                 self.logger.info("Could not get http return status")
@@ -1444,13 +1305,11 @@ class FgtConf:
     def get_next_available_sn(self):
         self.logger.info("Get next available serial number.")
         dydb_items = self.get_item_from_dydb("fortiflex", ["available_sn_list"])
-        if dydb_items:
-            if "available_sn_list" in dydb_items:
-                available_sn_list = self.convert_aws_dydb_to_normal_format(dydb_items["available_sn_list"])
-                if available_sn_list:
-                    rst = available_sn_list[0]
-                    self.remove_available_sn({rst})
-                    return rst
+        available_sn_list = dydb_items.get("available_sn_list", [])
+        if available_sn_list:
+            rst = available_sn_list[0]
+            self.remove_available_sn({rst})
+            return rst
         return None
 
     def add_available_sn(self, sn_set):
@@ -1467,9 +1326,7 @@ class FgtConf:
         self.logger.info(f"Get used serial number map.")
         used_sn_map = {}
         dydb_items = self.get_item_from_dydb("fortiflex", ["used_sn_map"])
-        if dydb_items:
-            if "used_sn_map" in dydb_items:
-                used_sn_map = self.convert_aws_dydb_to_normal_format(dydb_items["used_sn_map"])
+        used_sn_map = dydb_items.get("used_sn_map", {})
         return used_sn_map
 
     def update_used_sn_map(self, sn_map):
@@ -1494,97 +1351,147 @@ class FgtConf:
 
   # AWS Dynamo DB operations
     def get_item_from_dydb(self, category, attributes):
-        rst = None
+        rst = {}
         try:
-            response = self.dynamodb_client.get_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
+            if self.enable_privatelink_dydb:
+                payload = {
+                    "service" : "dynamodb",
+                    "operation" : "get_item",
+                    "parameters" : {
+                        "category" : category,
+                        "attributes": attributes
                     }
-                },
-                AttributesToGet=attributes)
-            rst = response.get("Item")
+                }
+                b_succ, rst = self.invoke_lambda(payload)
+            else:
+                response = self.dynamodb_client.get_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    AttributesToGet=attributes)
+                resp_content = response.get("Item")
+                for attr_name in attributes:
+                    if attr_name in resp_content:
+                        rst[attr_name] = self.convert_aws_dydb_to_normal_format(resp_content[attr_name])                
         except Exception as err:
             self.logger.error(f"Could not get item from Dynamo DB table: {err}")
         return rst
 
     def put_item_to_dydb(self, category, attribute_name, attribute_content):
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        if not aws_format_content:
-            self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return self.remove_item_from_dydb(category, attribute_name, attribute_content)
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
+            if self.enable_privatelink_dydb:
+                payload = {
+                    "service" : "dynamodb",
+                    "operation" : "put_item",
+                    "parameters" : {
+                        "category" : category,
+                        "attribute_name": attribute_name,
+                        "attribute_content": attribute_content
                     }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content
-                    }
-                })
-            b_succ = True
+                }
+                b_succ, rst = self.invoke_lambda(payload, "Event")
+            else:
+                aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+                if not aws_format_content:
+                    self.logger.info(f"Attribute content is empty: {attribute_content}")
+                    return self.remove_item_from_dydb(category, attribute_name, attribute_content)
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    AttributeUpdates={
+                        attribute_name: {
+                            'Value': aws_format_content
+                        }
+                    })
+                b_succ = True
         except Exception as err:
             self.logger.error(f"Could not update item in Dynamo DB table: {err}")
         return b_succ
 
     def add_item_to_dydb(self, category, attribute_name, attribute_content):
-        if type(attribute_content) not in [set, int, float]:
-            self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
-            return False
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        if not aws_format_content:
-            self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return False
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
+            if self.enable_privatelink_dydb:
+                payload = {
+                    "service" : "dynamodb",
+                    "operation" : "add_item",
+                    "parameters" : {
+                        "category" : category,
+                        "attribute_name": attribute_name,
+                        "attribute_content": attribute_content
                     }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content,
-                        'Action': 'ADD'
-                    }
-                })
-            b_succ = True
+                }
+                b_succ, rst = self.invoke_lambda(payload, "Event")
+            else:
+                if type(attribute_content) not in [set, int, float]:
+                    self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
+                    return False
+                aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+                if not aws_format_content:
+                    self.logger.info(f"Attribute content is empty: {attribute_content}")
+                    return False
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    AttributeUpdates={
+                        attribute_name: {
+                            'Value': aws_format_content,
+                            'Action': 'ADD'
+                        }
+                    })
+                b_succ = True
         except Exception as err:
             self.logger.error(f"Could not add item in Dynamo DB table: {err}")
         return b_succ
 
     def remove_item_from_dydb(self, category, attribute_name, attribute_content):
-        aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
-        if not aws_format_content:
-            self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return False
-        b_succ = False
-        attribute_value = {
-            'Action': 'DELETE'
-        }
-        if aws_format_content:
-            attribute_value["Value"] = aws_format_content
+        b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
+            if self.enable_privatelink_dydb:
+                payload = {
+                    "service" : "dynamodb",
+                    "operation" : "remove_item",
+                    "parameters" : {
+                        "category" : category,
+                        "attribute_name": attribute_name,
+                        "attribute_content": attribute_content
                     }
-                },
-                AttributeUpdates={
-                    attribute_name: attribute_value
                 }
-            )
-            b_succ = True
+                b_succ, rst = self.invoke_lambda(payload, "Event")
+            else:
+                aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
+                if not aws_format_content:
+                    self.logger.info(f"Attribute content is empty: {attribute_content}")
+                    return False
+                attribute_value = {
+                    'Action': 'DELETE'
+                }
+                if aws_format_content:
+                    attribute_value["Value"] = aws_format_content
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    AttributeUpdates={
+                        attribute_name: attribute_value
+                    }
+                )
+                b_succ = True
         except Exception as err:
             self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
         return b_succ
@@ -1660,19 +1567,9 @@ class FgtConf:
         self.logger.info("Get instance list of ASG.")
         rst = []
         try:
-            response = self.dynamodb_client.get_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': 'asg_instances',
-                    }
-                },
-                AttributesToGet=[
-                    'instance_list'
-                ])
-            items = response.get("Item")
-            if items:
-                rst = items.get('instance_list').get('L') if items.get('instance_list') else None
+            response = self.get_item_from_dydb("asg_instances", ["instance_list"])
+            if response:
+                rst = response.get('instance_list')
         except Exception as err:
             self.logger.error(f"Could not get instance list of ASG: {err}")
         return rst
@@ -1689,21 +1586,7 @@ class FgtConf:
         })
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': 'asg_instances',
-                    }
-                },
-                AttributeUpdates={
-                    'instance_list': {
-                        'Value': {
-                            'L': cur_list
-                        }
-                    }
-                })
-            b_succ = True
+            b_succ = self.put_item_to_dydb("asg_instances", "instance_list", cur_list)
         except Exception as err:
             self.logger.error(f"Could not add instance ID to Dynamo DB table: {err}")
         return b_succ
@@ -1716,21 +1599,7 @@ class FgtConf:
                 cur_list.remove(instance_dict)
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': 'asg_instances',
-                    }
-                },
-                AttributeUpdates={
-                    'instance_list': {
-                        'Value': {
-                            'L': cur_list
-                        }
-                    }
-                })
-            b_succ = True
+            b_succ = self.put_item_to_dydb("asg_instances", "instance_list", cur_list)
         except Exception as err:
             self.logger.error(f"Could not remove instance ID to Dynamo DB table: {err}")
         return b_succ
@@ -1741,21 +1610,10 @@ class FgtConf:
         primary_instance_id = None
         primary_ip = None
         try:
-            response = self.dynamodb_client.get_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': 'primary_instance',
-                    }
-                },
-                AttributesToGet=[
-                    'primary_instance_id',
-                    'primary_ip'
-                ])
-            items = response.get("Item")
-            if items:
-                primary_instance_id = items.get('primary_instance_id').get('S') if items.get('primary_instance_id') else None
-                primary_ip = items.get('primary_ip').get('S') if items.get('primary_ip') else None
+            response = self.get_item_from_dydb("primary_instance", ["primary_instance_id", "primary_ip"])
+            if response:
+                primary_instance_id = response.get('primary_instance_id')
+                primary_ip = response.get('primary_ip')
         except Exception as err:
             self.logger.error(f"Could not get primary instance information: {err}")
         return primary_instance_id, primary_ip
@@ -1764,28 +1622,8 @@ class FgtConf:
         self.logger.info("Update primary instance infomation.")
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': 'primary_instance',
-                    }
-                },
-                AttributeUpdates={
-                    'primary_instance_id': {
-                        'Value': {
-                            'S': f'{instance_id}'
-                        },
-                        'Action': 'PUT'
-                    },
-                    'primary_ip': {
-                        'Value': {
-                            'S': f'{primary_ip}'
-                        },
-                        'Action': 'PUT'
-                    }
-                })
-            b_succ = True
+            b_succ = self.put_item_to_dydb("primary_instance", "primary_instance_id", instance_id)
+            b_succ = self.put_item_to_dydb("primary_instance", "primary_ip", primary_ip)
         except Exception as err:
             self.logger.error(f"Could not update primary instance information: {err}")
         return b_succ
@@ -1909,6 +1747,7 @@ class FgtConf:
             
             if intf_conf.get("to_gwlb") and gwlb_ips:
                 az_list = intf_conf["subnet_id_map"].keys() if create_geneve_for_all_az else [self.fgt_az]
+                intf_device_index = intf_conf.get("device_index")
                 for az_name in az_list:
                     subnet_id = intf_conf["subnet_id_map"].get(az_name)
                     if not subnet_id:
@@ -1923,7 +1762,6 @@ class FgtConf:
                             rst += f"end\n"
                         continue
                     
-                    intf_device_index = intf_conf.get("device_index")
                     geneve_name = az_name
                     if az_name in az_name_map:
                         geneve_name = az_name_map[az_name]
@@ -2001,13 +1839,14 @@ class FgtConf:
     def upload_config(self, config_content, fgt_private_ip):
         self.logger.info("Upload configuration to FortiGate instance.")
         payload = {
-            "private_ip" : fgt_private_ip,
+            "service" : "fgt_vm",
             "operation" : "upload_config",
             "parameters" : {
+                "private_ip" : fgt_private_ip,
                 "config_content": config_content
             }
         }
-        b_succ = self.invoke_lambda(payload, "Event")
+        b_succ, response = self.invoke_lambda(payload, "Event")
         return b_succ
 
     def get_s3_file_content(self, bucket_name, key_name):
@@ -2026,13 +1865,14 @@ class FgtConf:
     def change_password(self, fgt_private_ip, fgt_vm_id):
         self.logger.info("Change password.")
         payload = {
-            "private_ip" : fgt_private_ip,
+            "service" : "fgt_vm",
             "operation" : "change_password",
             "parameters" : {
+                "private_ip" : fgt_private_ip,
                 "fgt_vm_id": fgt_vm_id
             }
         }
-        b_succ = self.invoke_lambda(payload)
+        b_succ, response = self.invoke_lambda(payload)
         return b_succ
  
 def lambda_handler(event, context):

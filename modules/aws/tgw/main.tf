@@ -37,7 +37,7 @@ resource "aws_ec2_transit_gateway" "tgw" {
   description                     = var.tgw_description
   tags = merge(
     {
-      Name = var.tgw_name
+      Name = "${var.module_prefix}${var.tgw_name}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "tgw", {})
@@ -58,7 +58,7 @@ resource "aws_ec2_transit_gateway_vpc_attachment" "tgw_attachments" {
   transit_gateway_default_route_table_propagation = lookup(each.value, "transit_gateway_default_route_table_propagation", true)
   tags = merge(
     {
-      Name = each.key
+      Name = "${var.module_prefix}${each.key}"
     },
     lookup(var.tags, "general", {}),
     lookup(var.tags, "tgw_attachment", {})

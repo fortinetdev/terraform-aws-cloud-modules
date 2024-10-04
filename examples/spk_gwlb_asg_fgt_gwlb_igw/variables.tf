@@ -212,6 +212,12 @@ variable "security_groups" {
   }
 }
 
+variable "existing_security_groups" {
+  description = "Existing Security group names."
+  type        = list(string)
+  default     = []
+}
+
 variable "availability_zones" {
   description = "Availability Zones"
   type        = list(string)
@@ -237,7 +243,7 @@ variable "subnet_cidr_block" {
     condition     = tonumber(element(split("/", var.subnet_cidr_block), 1) == "" ? "0" : element(split("/", var.subnet_cidr_block), 1)) <= 24
     error_message = <<-EOF
     Auto set subnet do not support netmask larger then 24. Current netmask is "${tonumber(element(split("/", var.subnet_cidr_block), 1) == "" ? "99" : element(split("/", var.subnet_cidr_block), 1))}". Please provide a CIDR block with netmask smaler or equal to 24. Otherwise, please delete this validation and provide the variable \"subnets\" manually.
-    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\". Specify the target subnet you needed.
+    The format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\", \"privatelink_\". Specify the target subnet you needed.
     Here is an example:
     ```
       subnets = {
@@ -272,6 +278,10 @@ variable "subnet_cidr_block" {
         gwlbe_2b = {
           cidr_block        = "10.0.13.0/24"
           availability_zone = "us-east-2b"
+        },
+        privatelink_ep = {
+          cidr_block        = "10.0.4.0/24"
+          availability_zone = "us-east-2a"
         }
       }
     ```
@@ -282,7 +292,7 @@ variable "subnet_cidr_block" {
 variable "subnets" {
   description = <<-EOF
         Subnets configuration for the target VPC.
-        The format of subnet name should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\". Specify the target subnet you needed.
+        The format of subnet name should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\", \"privatelink_\". Specify the target subnet you needed.
         Format:
         ```
             subnets = {
@@ -324,7 +334,7 @@ variable "subnets" {
 variable "existing_subnets" {
   description = <<-EOF
     Using existing subnets. 
-    Name format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\".
+    Name format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\", \"privatelink_\".
     Options:
         - id                      :  (Optional|required) Subnet ID.
         - availability_zone       :  (Optional|required) AZ for the subnet.
@@ -355,6 +365,12 @@ variable "existing_subnets" {
 }
 
 ## Auto scale group
+variable "enable_privatelink_dydb" {
+  description = "Enable privatelink by VPC endpoint for DynamoDB. `privatelink_security_groups` is needed on variable `asgs` if this variable set to true."
+  default     = false
+  type        = bool
+}
+
 variable "asgs" {
   description = <<-EOF
   Auto Scaling group map.
@@ -405,6 +421,7 @@ variable "asgs" {
     - asg_desired_capacity : (Optional|number) Number of Amazon EC2 instances that should be running in the group.
     - create_dynamodb_table : (Optional|bool) If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false.
     - dynamodb_table_name : (Required|string) DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP.
+    - privatelink_security_groups : (Optional|string) Security group name list to create interface endpoint.
     - scale_policies : (Optional|map) Auto Scaling group scale policies.
       Key is policy name. Options for values of parameter scale_policies:
         - policy_type               : (Required|string) Policy type, either "SimpleScaling", "StepScaling", "TargetTrackingScaling", or "PredictiveScaling".
@@ -657,7 +674,7 @@ variable "existing_gwlb_ep_service" {
 ## Spoke VPC
 variable "spk_vpc" {
   description = <<-EOF
-    Spoke VPC configuration. VPC ID and Subnet IDs shold be provided. This module will create Gateway Load Balancer Endpoint under each subnet, and create VPC route tables to IGW with the subnet associated if argument `.
+    Spoke VPC configuration. VPC ID and GWLB endpoint Subnet IDs shold be provided. This module will create VPC route tables under Spoke VPC if variable 'route_tables' been specified.
     Format:
     ```
         spk_vpc = {
@@ -677,7 +694,7 @@ variable "spk_vpc" {
     Spoke VPC options:
         - vpc_id     : (Optional|string) Spoke VPC ID.
         - gwlbe_subnet_ids : (Optional|list) Subnet ID list that used to create GWLB endpoint.
-        - route_tables     : (Optional|map) Route table configurations. Please check the detailed configuration requirement on module vpc_route_table. Note: if the target argument is the Gateway Load Balancer Endpoint created by the template, use `gwlbe_subnet_id` to specify the subnet ID of the target GWLBE.
+        - route_tables     : (Optional|map) Route table configurations. Please check the detailed configuration requirement on module vpc_route_table. Note: if the target argument is the Gateway Load Balancer Endpoint created by the template, use `gwlbe_subnet_id` to specify the subnet ID of the target GWLBE. The template could only create new route, please manually modify the route is you want to change existing route.
     Example:
     ```
     spk_vpc = {
@@ -750,4 +767,10 @@ variable "spk_vpc" {
     ])
     error_message = "One or more argument(s) can not be identified, available options: vpc_id, gwlbe_subnet_ids, route_tables."
   }
+}
+
+variable "module_prefix" {
+  description = "Prefix that will be used in the whole module."
+  type        = string
+  default     = ""
 }

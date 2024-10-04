@@ -326,3 +326,9 @@ variable "tags" {
     error_message = "One or more argument(s) can not be identified, available options: general, gwlb, tgp, gwlb_ln, gwlb_ep_service, gwlb_endp."
   }
 }
+
+variable "module_prefix" {
+  description = "Prefix that will be used in the whole module."
+  type        = string
+  default     = ""
+}

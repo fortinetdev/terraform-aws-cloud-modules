@@ -308,6 +308,34 @@ variable "scale_policies" {
 }
 
 ## Lambda
+variable "dynamodb_privatelink" {
+  description = <<-EOF
+  DynamoDB private link by VPC endpoint.
+  Options:
+    - vpc_id                      : (Required|string) VPC ID that will used to create interface endpoint.
+    - region                      : (Required|string) The region to deploy the interface endpoint.
+    - privatelink_subnet_ids      : (Required|list) Subnet ID list to create interface endpoint.
+    - privatelink_security_groups : (Required|list) Security group ID list to create interface endpoint.
+
+  Example:
+  ```
+  scale_policies = {
+    vpc_id = \<VPC_id\> 
+    region = "us-west-1"
+    privatelink_subnet_ids = ["\<subnet_id\>"]
+    privatelink_security_groups = ["\<security_group_name\>"]
+  }
+  ```
+  EOF
+  type = object({
+    vpc_id                      = string
+    region                      = string
+    privatelink_subnet_ids      = list(string)
+    privatelink_security_groups = list(string)
+  })
+  default = null
+}
+
 variable "lambda_timeout" {
   description = "Amount of time your Lambda Function has to run in seconds. Defaults to 300."
   type        = number
@@ -408,4 +436,10 @@ variable "tags" {
     ])
     error_message = "One or more argument(s) can not be identified, available options: general, template, asg, instance, lambda, iam, dynamodb, s3, cloudwatch."
   }
+}
+
+variable "module_prefix" {
+  description = "Prefix that will be used in the whole module."
+  type        = string
+  default     = ""
 }

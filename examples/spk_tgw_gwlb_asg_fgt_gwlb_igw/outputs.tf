@@ -27,3 +27,7 @@ output "ngw" {
 output "az_name_map" {
   value = local.az_name_map
 }
+
+output "module_prefix" {
+  value = local.module_prefix
+}

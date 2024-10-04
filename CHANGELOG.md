@@ -1,5 +1,13 @@
 ## Unreleased
 
+## 1.0.3 (Oct 4, 2024)
+
+IMPROVEMENTS:
+
+* Support private link for DynamoDB by VPC endpoint; 
+* Add module prefix to avoid conflict when apply multiple times;
+* Avoid using Fortiflex token with ACTIVE status and already used;
+
 ## 1.0.2 (Apr 9, 2024)
 
 IMPROVEMENTS:
