@@ -20,10 +20,6 @@ output "route_tables" {
   value = local.route_tables
 }
 
-output "gwlb_endps" {
-  value = local.gwlb_endps
-}
-
 output "spkvpc_rt" {
   value = local.spkvpc_rt
 }
@@ -34,4 +30,8 @@ output "az_name_map" {
 
 output "module_prefix" {
   value = local.module_prefix
+}
+
+output "gwlb_endps" {
+  value = module.security-vpc-gwlb.gwlb_endps
 }

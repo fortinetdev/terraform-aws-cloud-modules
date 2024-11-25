@@ -28,7 +28,7 @@ config system interface
         set vdom ${ lookup(intf_value, "vdom", "root") }
         %{ endif ~}
         set mode dhcp
-        %{ if lookup(intf_value, "enable_public_ip", false) ~}
+        %{ if lookup(intf_value, "enable_public_ip", false) || lookup(intf_value, "mgmt_intf", false) ~}
         set defaultgw enable
         %{ else ~}
         set distance 6

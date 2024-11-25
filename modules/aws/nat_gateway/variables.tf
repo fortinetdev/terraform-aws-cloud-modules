@@ -73,6 +73,7 @@ variable "connectivity_type" {
 variable "subnet_id" {
   description = " The Subnet ID of the subnet in which to place the gateway."
   type        = string
+  default     = null
 }
 
 variable "private_ip" {

@@ -1,5 +1,15 @@
 ## Unreleased
 
+## 1.1.0 (Nov 25, 2024)
+
+IMPROVEMENTS:
+* Add module fgt;
+* Add example fgt_standalone;
+* Support option of not assign public IP for all FortiGate instance;
+* Support create extra interfaces for FortiGate instance;
+* Add output of 'gwlb_endps' to output the GWLB's endpoints information on all examples;
+* Support creating GWLB endpoints under spoke vpc for example spk_tgw_gwlb_asg_fgt_igw;
+
 ## 1.0.3 (Oct 4, 2024)
 
 IMPROVEMENTS:

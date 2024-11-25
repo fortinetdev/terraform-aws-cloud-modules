@@ -1,0 +1,69 @@
+Content-Type: multipart/mixed; boundary="===============0086047718136476635=="
+MIME-Version: 1.0
+
+--===============0086047718136476635==
+Content-Type: text/plain; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="config"
+
+%{ if fgt_hostname != "" || fgt_admin_https_port != "" || fgt_admin_ssh_port != "" ~}
+config system global
+    %{ if fgt_hostname != "" ~}
+    set hostname ${fgt_hostname}
+    %{ endif ~}
+    %{ if fgt_admin_https_port != "" ~}
+    set admin-sport ${fgt_admin_https_port}
+    %{ endif ~}
+    %{ if fgt_admin_ssh_port != "" ~}
+    set admin-ssh-port ${fgt_admin_ssh_port}
+    %{ endif ~}
+end
+%{ endif ~}
+
+%{ if fgt_password != "" ~}
+config system admin
+    edit "admin"
+        set password ${fgt_password}
+    next
+end
+%{ endif ~}
+
+%{ if fgt_multi_vdom ~}
+config system global
+    set vdom-mode multi-vdom
+end
+%{ endif ~}
+
+%{ for intf_name, intf_value in network_interfaces ~}
+%{ if fgt_multi_vdom ~}
+config vdom
+edit ${ lookup(intf_value, "vdom", "root") }
+%{ endif ~}
+config system interface
+    edit "port${intf_value.device_index + 1}"
+        set allowaccess ping https ssh snmp http telnet fgfm
+        %{ if fgt_multi_vdom ~}
+        set vdom ${ lookup(intf_value, "vdom", "root") }
+        %{ endif ~}
+        set mode dhcp
+        set description ${lookup(intf_value, "description", "") }
+    next
+end
+
+%{ if fgt_multi_vdom ~}
+end
+%{ endif ~}
+%{ endfor ~}
+
+${user_conf}
+
+--===============0086047718136476635==
+Content-Type: text/plain; charset="us-ascii"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="license"
+
+${fgt_license}
+
+--===============0086047718136476635==--

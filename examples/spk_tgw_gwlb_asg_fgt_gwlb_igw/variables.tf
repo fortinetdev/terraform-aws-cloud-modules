@@ -336,8 +336,8 @@ variable "existing_subnets" {
     Using existing subnets. 
     Name format should be follow the name prefix of \"fgt_login_\", \"fgt_internal_\", \"tgw_attachment_\", \"gwlbe_\", "ngw_", \"privatelink_\".
     Options:
-        - id                      :  (Optional|required) Subnet ID.
-        - availability_zone       :  (Optional|required) AZ for the subnet.
+        - id                      :  (Required|string) Subnet ID.
+        - availability_zone       :  (Required|string) AZ for the subnet.
         
     Example:
     ```
@@ -365,9 +365,9 @@ variable "existing_subnets" {
 }
 
 ## NAT Gateways
-variable "existing_ngw" {
+variable "existing_ngws" {
   description = <<-EOF
-    Using existing NAT Gateway. 
+    Using existing NAT Gateway. List of map. 
     Options:
         - id        :  (Optional|string) ID of the specific NAT Gateway to retrieve.
         - subnet_id :  (Optional|string) ID of subnet that the NAT Gateway resides in.
@@ -377,23 +377,25 @@ variable "existing_ngw" {
         - tags      :  (Optional|map) Map of tags, each pair of which must exactly match a pair on the desired VPC Endpoint Service.
     Example:
     ```
-    existing_ngw = {
+    existing_ngws = [{
         id = "nat-1234567789"
-    }
+    }]
     ```
     EOF
   type        = any
   default     = null
   validation {
-    condition = var.existing_ngw == null ? true : alltrue([
-      for k, v in var.existing_ngw : contains([
-        "id",
-        "subnet_id",
-        "vpc_id",
-        "state",
-        "filter",
-        "tags"
-      ], k)
+    condition = var.existing_ngws == null ? true : alltrue([
+      for ele in var.existing_ngws : alltrue([
+        for k, v in ele : contains([
+          "id",
+          "subnet_id",
+          "vpc_id",
+          "state",
+          "filter",
+          "tags"
+        ], k)
+      ])
     ])
     error_message = "One or more argument(s) can not be identified, available options: id,subnet_id, vpc_id, state, filter, tags."
   }
@@ -488,6 +490,12 @@ variable "enable_privatelink_dydb" {
   type        = bool
 }
 
+variable "fgt_access_internet_mode" {
+  description = "The mode of FortiGate instance to access internet. Options: `nat_gw`, `eip`, `no_eip`. `nat_gw`: Using NAT Gateway to access internet for FortiGate instances; `eip`: Assign public IP to each FortiGate instance; `no_eip`: Do not assign public IP to FortiGate instances."
+  default     = "eip"
+  type        = string
+}
+
 variable "asgs" {
   description = <<-EOF
   Auto Scaling group map.
@@ -509,6 +517,7 @@ variable "asgs" {
     - fgt_hostname : (Optional|string) FortiGate instance hostname.
     - fgt_password : (Required|string) FortiGate instance login password. This is required for BYOL type of FortiGate instance since we need to upload the license to the instance by lambda function.
     - fgt_multi_vdom : (Optional|bool) Flag of FortiGate instance vdom type. `true` will be multi-vdom mode. `false` will be single-vdom mode. Default is `false`.
+    - enable_public_ip : (Optional|bool) Flag of whether create public IP for FortiGate instance. Default is `true` if variable fgt_access_internet_mode set to 'eip', `false` if set 'nat_gw'.
     - lic_folder_path : (Optional|string) Folder path of FortiGate license files.
     - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files or token json file.
     - fortiflex_refresh_token : (Optional|string) Refresh token used for FortiFlex.
@@ -528,10 +537,28 @@ variable "asgs" {
     - user_conf_file_path : (Optional|string) User configuration file path that will applied to FortiGate instance.
     - user_conf_s3 : (Optional|map(list(string))) User configuration files in AWS S3 that will applied to FortiGate instance.
         The key is the Bucket name, and the value is a list of key names in this Bucket.
-    - intf_security_group : (Required|string) Security group map for FortiGate instance instances.
+    - intf_security_group : (Required|map) Security group map for FortiGate instance instances.
       Options:
         - login_port : (Required|string) Security group name for the login port of FortiGate instance.
         - internal_port : (Required|string) Security group name for the internal traffic port of FortiGate instance.
+    - extra_network_interfaces : (Optional|map) Extra network interfaces for the FortiGate instance. 
+      Options:
+        - device_index       : (Required|int) Integer to define the network interface index. Device index starting from 1 if fgt_intf_mode set to 1-arm, 2 for 2-arm.
+        - vdom               : (Optional|string) Vdom name that the interface belongs to. Only works when vdom mode is multi-vdom. Default will be root if not set and vdom mode is multi-vdom.
+        - description        : (Optional|string) Description for the network interface.
+        - source_dest_check  : (Optional|bool) Whether to enable source destination checking for the ENI. Defaults false.
+        - enable_public_ip   : (Optional|bool) Whether to assign a public IP for the ENI. Defaults to false.
+        - public_ipv4_pool   : (Optional|string) Specify EC2 IPv4 address pool. If not set, Amazon's poll will be used. Only useful when `enable_public_ip` is set to true.
+        - mgmt_intf          : (Optional|bool) Whether this interface is management interface. If set to true, will set defaultgw to true for this interface on FortiGate instance. Default is false.
+        - subnet             : (Required|list(map)) Subnet infomation to create the interface.
+          Options:
+          - id : (Optional|string) ID of the Subnet.
+          - name_prefix : (Optional|string) Name prefix of the Subnet that managed by this example.
+          - zone_name   : (Optional|string) Zone name of the subnet. Required if id been provided.
+        - security_groups    : (Optional|list) List of map of security group to assign to the ENI. Defaults null.
+          Options:
+          - id : (Optional|string) ID of the Gateway.
+          - name : (Optional|string) Name of the Gateway that created by this example.
     Auto Scale Group
     - asg_max_size : (Required|number) Maximum size of the Auto Scaling Group.
     - asg_min_size : (Required|number) Minimum size of the Auto Scaling Group.

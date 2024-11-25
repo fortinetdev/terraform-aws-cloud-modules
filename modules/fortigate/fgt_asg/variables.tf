@@ -11,7 +11,7 @@ variable "template_name" {
   default     = ""
 }
 
-variable "keypire_name" {
+variable "keypair_name" {
   description = "The keypair name that used in FortiGate EC2 instance."
   type        = string
 }
@@ -109,6 +109,7 @@ variable "network_interfaces" {
     - enable_public_ip   : (Optional|bool) Whether to assign a public IP for the ENI. Defaults to false.
     - public_ipv4_pool   : (Optional|string) Specify EC2 IPv4 address pool. If not set, Amazon's poll will be used. Only useful when `enable_public_ip` is set to true.
     - existing_eip_id    : (Optional|string) Associate an existing EIP to the ENI. Sould set enable_public_ip to false.
+    - mgmt_intf          : (Optional|bool) Whether this interface is management interface. If set to true, will set defaultgw to true for this interface on FortiGate instance. Default is false.
   
   Example:
   ```
@@ -149,10 +150,12 @@ variable "network_interfaces" {
           "security_groups",
           "enable_public_ip",
           "public_ipv4_pool",
-        "existing_eip_id"], sk)
+          "existing_eip_id",
+          "mgmt_intf"
+        ], sk)
       ])
     ])
-    error_message = "One or more argument(s) can not be identified, available options: device_index, subnet_id_map, vdom, description, to_gwlb, private_ips, source_dest_check, security_groups, enable_public_ip, public_ipv4_pool, existing_eip_id."
+    error_message = "One or more argument(s) can not be identified, available options: device_index, subnet_id_map, vdom, description, to_gwlb, private_ips, source_dest_check, security_groups, enable_public_ip, public_ipv4_pool, existing_eip_id, mgmt_intf."
   }
   validation {
     condition = var.network_interfaces == null ? true : alltrue([
@@ -382,6 +385,12 @@ variable "fortiflex_configid_list" {
   description = "Config ID list from FortiFlex account that used to activate FortiGate instance."
   type        = list(any)
   default     = []
+}
+
+variable "mgmt_intf_index" {
+  description = "Management interface device index that will used on Lambda function to connect with FortiGate instance."
+  type        = number
+  default     = 0
 }
 
 ## Tag related

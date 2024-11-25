@@ -21,6 +21,11 @@ data "aws_nat_gateway" "ngw" {
   }
 }
 
+data "aws_subnet" "ngw_subnet" {
+  count = local.ngw == null ? 0 : 1
+  id    = local.ngw.subnet_id
+}
+
 resource "aws_eip" "ngw_eips" {
   count = var.allocate_eip == false ? 0 : var.existing_eip_id == null ? 1 : 0
 

@@ -31,3 +31,7 @@ output "az_name_map" {
 output "module_prefix" {
   value = local.module_prefix
 }
+
+output "gwlb_endps" {
+  value = module.security-vpc-gwlb.gwlb_endps
+}

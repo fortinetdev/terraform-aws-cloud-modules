@@ -38,7 +38,7 @@ resource "aws_launch_template" "fgt" {
   name                   = var.template_name == "" ? null : "${var.module_prefix}${var.template_name}"
   image_id               = local.fos_ami_id
   instance_type          = var.instance_type
-  key_name               = var.keypire_name
+  key_name               = var.keypair_name
   update_default_version = true
   user_data              = base64encode(local.fgt_userdata)
 
@@ -378,6 +378,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       fortiflex_sn_list              = jsonencode(var.fortiflex_sn_list)
       fortiflex_configid_list        = jsonencode(var.fortiflex_configid_list)
       az_name_map                    = jsonencode(var.az_name_map)
+      mgmt_intf_index                = var.mgmt_intf_index
     }
   }
 
@@ -401,11 +402,11 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
 
   vpc_config {
     subnet_ids = distinct(concat(
-      concat([for intf_name, intf_info in var.network_interfaces : values(intf_info["subnet_id_map"]) if lookup(intf_info, "subnet_id_map", null) != null]...),
+      concat([for intf_name, intf_info in var.network_interfaces : values(intf_info["subnet_id_map"]) if(intf_info["device_index"] == var.mgmt_intf_index && lookup(intf_info, "subnet_id_map", null) != null)]...),
       local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_subnet_ids : []
     ))
     security_group_ids = distinct(concat(
-      concat([for intf_name, intf_info in var.network_interfaces : intf_info["security_groups"] if lookup(intf_info, "security_groups", null) != null]...),
+      concat([for intf_name, intf_info in var.network_interfaces : intf_info["security_groups"] if(intf_info["device_index"] == var.mgmt_intf_index && lookup(intf_info, "security_groups", null) != null)]...),
       local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_security_groups : []
     ))
   }

@@ -1,0 +1,239 @@
+## Note: Please go through all arguments in this file and replace the content with your configuration! This file is just an example.
+## "<YOUR-OWN-VALUE>" are parameters that you need to specify your own value.
+
+## Root config
+access_key = "<YOUR-OWN-VALUE>"
+secret_key = "<YOUR-OWN-VALUE>"
+region     = "<YOUR-OWN-VALUE>" # e.g. "us-east-2"
+
+## VPC
+  module_prefix = "module1"
+  security_groups = {
+    secgrp1 = {
+      description = "Security group by Terraform"
+      ingress = {
+        all_traffic = {
+          from_port   = "0"
+          to_port     = "0"
+          protocol    = "-1"
+          cidr_blocks = ["0.0.0.0/0"]
+        }
+      }
+      egress = {
+        all_traffic = {
+          from_port   = "0"
+          to_port     = "0"
+          protocol    = "-1"
+          cidr_blocks = ["0.0.0.0/0"]
+        }
+      }
+    }
+  }
+
+  vpc_cidr_block = "10.0.0.0/16" 
+  subnets = {
+      fgt_mgmt = {
+          cidr_block = "10.0.0.0/24"
+          availability_zone = "us-east-2a"
+      },
+      subnet1 = {
+          cidr_block = "10.0.1.0/24"
+          availability_zone = "us-east-2a"
+      },
+      subnet2 = {
+          cidr_block = "10.0.2.0/24"
+          availability_zone = "us-east-2a"
+      },
+      subnet3 = {
+          cidr_block = "10.0.3.0/24"
+          availability_zone = "us-east-2a"
+      },
+  }
+
+  route_tables = {
+    fgt_login = {
+      routes = {
+        to_igw = {
+          destination_cidr_block   = "0.0.0.0/0"
+          gateway = {
+            name = "security-vpc-igw"
+          }
+        }
+      }
+      rt_association_subnets = [
+        {
+          name = "fgt_mgmt"
+        }
+      ]
+    },
+    subnet1 = {
+      routes = {
+        to_ubu2 = {
+          destination_cidr_block   = "10.0.3.0/24"
+          network_interface = {
+            name = "fgt1.port2"
+          }
+        },
+        to_igw = {
+          destination_cidr_block   = "0.0.0.0/0"
+          gateway = {
+            name = "security-vpc-igw"
+          }
+        }
+      }
+      rt_association_subnets = [
+        {
+          name = "subnet1"
+        }
+      ]
+    },
+    subnet3 = {
+      routes = {
+        to_ubu1 = {
+          destination_cidr_block   = "10.0.1.0/24"
+          network_interface = {
+            name = "fgt2.port3"
+          }
+        },
+        to_igw = {
+          destination_cidr_block   = "0.0.0.0/0"
+          gateway = {
+            name = "security-vpc-igw"
+          }
+        }
+      }
+      rt_association_subnets = [
+        {
+          name = "subnet3"
+        }
+      ]
+    },
+    subnet2 = {
+      routes = {
+        to_ubu1 = {
+          destination_cidr_block   = "10.0.1.0/24"
+          network_interface = {
+            name = "fgt1.port3"
+          }
+        },
+        to_ubu2 = {
+          destination_cidr_block   = "10.0.3.0/24"
+          network_interface = {
+            name = "fgt2.port2"
+          }
+        }
+      }
+      rt_association_subnets = [
+        {
+          name = "subnet2"
+        }
+      ]
+    }
+  }
+  ## FGTs
+  fgts = {
+    fgt1 = {
+      fgt_version = "7.4"
+      license_type = "byol"
+      fgt_password = "fortinet"
+      keypair_name = "terr-test-us-east"
+      lic_file_path = "${path.root}/fgt_lic1.lic"
+      # instance_type  = ""
+      # fortiflex_sn = ""
+      fgt_admin_https_port = 8443
+      fgt_admin_ssh_port = 8822
+      cpu_options = {
+        core_count = 3
+      }
+      user_conf_file_path = "${path.module}/fgt_config1.conf"
+      network_interfaces = {
+        mgmt = {
+          device_index       = 0
+          subnet          = {
+            name = "fgt_mgmt"
+          }
+          enable_public_ip   = true
+          source_dest_check  = false
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        },
+        port2 = {
+          device_index     = 1
+          private_ips = ["10.0.1.100"]
+          source_dest_check  = false
+          subnet        = {
+            name = "subnet1"
+          }
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        },
+        port3 = {
+          device_index     = 2
+          private_ips = ["10.0.2.100"]
+          source_dest_check  = false
+          subnet        = {
+            name = "subnet2"
+          }
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        }
+      }
+    },
+    fgt2 = {
+      fgt_version = "7.4"
+      license_type = "byol"
+      fgt_password = "fortinet"
+      keypair_name = "terr-test-us-east"
+      lic_file_path = "${path.root}/fgt_lic2.lic"
+      # fortiflex_sn = ""
+      fgt_admin_https_port = 8443
+      fgt_admin_ssh_port = 8822
+      cpu_options = {
+        core_count = 3
+      }
+      user_conf_file_path = "${path.module}/fgt_config2.conf"
+      network_interfaces = {
+        mgmt = {
+          device_index       = 0
+          subnet          = {
+            name = "fgt_mgmt"
+          }
+          enable_public_ip   = true
+          source_dest_check  = false
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        },
+        port2 = {
+          device_index     = 1
+          private_ips = ["10.0.2.101"]
+          source_dest_check  = false
+          subnet        = {
+            name = "subnet2"
+          }
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        },
+        port3 = {
+          device_index     = 2
+          private_ips = ["10.0.3.101"]
+          source_dest_check  = false
+          subnet        = {
+            name = "subnet3"
+          }
+          security_groups = [{
+            name = "secgrp1"
+          }]
+        }
+      }
+    }
+  }
+
+  ## Tag
+  general_tags = {
+    "purpuse" = "Terraform_TEST"
+  }

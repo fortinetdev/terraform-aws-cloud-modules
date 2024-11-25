@@ -467,6 +467,7 @@ class FgtConf:
         self.fgt_system_autoscale_psksecret = os.getenv("fgt_system_autoscale_psksecret")
         self.fgt_login_port_number = os.getenv("fgt_login_port_number")
         self.internal_lambda_name = os.getenv("internal_lambda_name")
+        self.mgmt_intf_index = os.getenv("mgmt_intf_index")
         self.asg_name = os.getenv("asg_name")
 
     def main(self):
@@ -561,13 +562,11 @@ class FgtConf:
 # Instance information
     def get_private_ip(self, instance):
         rst = None
-        if instance.get("PublicIpAddress"):
-            rst = instance.get('PrivateIpAddress')
         if not rst:
             for intf in instance['NetworkInterfaces']:
-                if "PrivateIpAddress" not in intf:
+                if "Attachment" not in intf or str(intf["Attachment"].get("DeviceIndex")) != self.mgmt_intf_index:
                     continue
-                if "Association" not in intf or not intf["Association"].get("PublicIp"):
+                if "PrivateIpAddress" not in intf:
                     continue
                 cur_private_ip = intf.get("PrivateIpAddress")
                 if cur_private_ip:

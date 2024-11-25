@@ -14,7 +14,9 @@ locals {
   base_netmask      = element(local.cidr_split, 1) == "" ? 99 : tonumber(element(local.cidr_split, 1))
   step_num          = local.base_netmask <= 19 ? 1 : 16
   subnet_netmask    = local.step_num == 1 ? 24 : 28
-  subnet_prefixs    = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
+  subnet_prefix_ngw = var.fgt_access_internet_mode == "nat_gw" && (var.existing_ngws == null || length(coalesce(var.existing_ngws, [])) == 0) ? ["ngw_"] : []
+  subnet_prefixs    = concat(local.subnet_prefix_fgt, local.subnet_prefix_ngw)
+  subnet_prefix_fgt = var.fgt_intf_mode == "1-arm" ? ["fgt_login_", ""] : ["fgt_login_", "fgt_internal_"]
   create_subnets = var.existing_subnets != null ? {} : (var.subnets != null && var.subnets != {}) ? var.subnets : local.base_netmask > 24 ? {} : merge(
     merge([
       for az_i in range(length(var.availability_zones)) : merge([
@@ -55,7 +57,36 @@ locals {
 
   # Security VPC route table
   route_tables = {
-    "secvpc" = (module.security-vpc.has_igw == false ||
+    "secvpc" = (var.fgt_access_internet_mode == "nat_gw" && module.ngw != null) ? merge(
+      {
+        for az in(
+          var.existing_ngws != null && length(coalesce(var.existing_ngws, [])) != 0 ? (
+            length(var.existing_ngws) == length(var.availability_zones) ? var.availability_zones : range(var.existing_ngws)
+          ) : distinct([for k, v in local.subnets : v["availability_zone"] if startswith(k, "${local.module_prefix}ngw_")])
+          ) : "fgt_login_${az}" => {
+          routes = {
+            to_ngw = {
+              destination_cidr_block = "0.0.0.0/0"
+              nat_gateway_id         = [for k, v in module.ngw : v.nat_gateway.id if v.availability_zone == az][0]
+            }
+          },
+          rt_association_subnets = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}fgt_login_") && v["availability_zone"] == az]
+        }
+      },
+      (module.security-vpc.has_igw == false ||
+        length([for k, v in local.create_subnets : k if startswith(k, "ngw_")]) == 0) ? {} : {
+        ngw_igw = {
+          routes = {
+            local_pc = {
+              destination_cidr_block = "0.0.0.0/0"
+              gateway_id             = module.security-vpc.igw_id
+            }
+          },
+          rt_association_subnets = [for k, v in local.create_subnets : local.subnets["${local.module_prefix}${k}"]["id"] if startswith(k, "ngw_")]
+        }
+      }
+      ) : (var.fgt_access_internet_mode != "eip" ||
+      module.security-vpc.has_igw == false ||
       length([for k, v in local.create_subnets : k if startswith(k, "fgt_login_")]) == 0) ? {} : {
       fgt_login = {
         routes = {
@@ -113,10 +144,7 @@ module "security-vpc" {
       {
         created_from = "Terraform"
       }
-    ),
-    vpc = {
-      test_tag = "tgw-test-tag"
-    }
+    )
   }
 }
 
@@ -133,6 +161,17 @@ module "security_route_table" {
   depends_on = [
     module.security-vpc
   ]
+}
+
+# Create Nat Gateways
+module "ngw" {
+  source = "../../modules/aws/nat_gateway"
+
+  for_each = var.fgt_access_internet_mode != "nat_gw" ? {} : var.existing_ngws != null && length(coalesce(var.existing_ngws, [])) != 0 ? {
+    for i in range(length(var.existing_ngws)) : "existing_ngw${i}" => jsonencode(var.existing_ngws[i]) # jsonencode makes type consistancy for the true and false value
+  } : { for k, v in local.subnets : k => v["id"] if startswith(k, "${local.module_prefix}ngw_") }
+  subnet_id    = startswith(each.key, "existing_ngw") ? null : each.value
+  existing_ngw = jsondecode(startswith(each.key, "existing_ngw") ? each.value : jsonencode(null)) # json encode/decode makes null as dynamic type
 }
 
 # Create FortiGate Auto Scaling group
@@ -160,7 +199,7 @@ module "fgt_asg" {
   fortiflex_password             = lookup(each.value, "fortiflex_password", "")
   fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", [])
   fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", [])
-  keypire_name                   = each.value.keypair_name
+  keypair_name                   = each.value.keypair_name
   enable_fgt_system_autoscale    = lookup(each.value, "enable_fgt_system_autoscale", false)
   fgt_system_autoscale_psksecret = lookup(each.value, "fgt_system_autoscale_psksecret", "")
   fgt_login_port_number          = lookup(each.value, "fgt_login_port_number", "")
@@ -186,33 +225,71 @@ module "fgt_asg" {
     privatelink_subnet_ids      = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}privatelink_")]
     privatelink_security_groups = [for sg_name in each.value.privatelink_security_groups : local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg_name}"]]
   } : null
-  network_interfaces = jsondecode(
-    var.fgt_intf_mode == "1-arm" ? jsonencode({
-      mgmt = {
-        device_index      = 0
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
-        enable_public_ip  = true
-        to_gwlb           = true
-        source_dest_check = true
-        security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
-      }
-      }) : jsonencode({
-      mgmt = {
-        device_index      = 1
-        subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
-        enable_public_ip  = true
-        source_dest_check = true
-        security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
-      },
-      internal_traffic = {
-        device_index    = 0
-        to_gwlb         = true
-        subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_internal_") }
-        security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["internal_port"]}"]]
-      }
-    })
+  network_interfaces = merge(
+    jsondecode(
+      var.fgt_intf_mode == "1-arm" ? jsonencode({
+        mgmt = {
+          device_index      = 0
+          subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
+          enable_public_ip  = lookup(each.value, "enable_public_ip", var.fgt_access_internet_mode == "eip" ? true : false)
+          to_gwlb           = true
+          source_dest_check = true
+          mgmt_intf         = true
+          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
+        }
+        }) : jsonencode({
+        mgmt = {
+          device_index      = 1
+          subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
+          enable_public_ip  = lookup(each.value, "enable_public_ip", var.fgt_access_internet_mode == "eip" ? true : false)
+          source_dest_check = true
+          mgmt_intf         = true
+          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
+        },
+        internal_traffic = {
+          device_index    = 0
+          to_gwlb         = true
+          subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_internal_") }
+          security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["internal_port"]}"]]
+        }
+      })
+    ),
+    lookup(each.value, "extra_network_interfaces", null) == null ? {} : {
+      for k, v in each.value.extra_network_interfaces : k => merge([
+        for sk, sv in v : [
+          (
+            sk == "subnet" && sv != null ? {
+              subnet_id_map = merge([
+                for svi in sv : lookup(svi, "id", "") != "" ? (
+                  lookup(svi, "zone_name", "") != "" ? {
+                    "${svi.zone_name}" = svi.id
+                  } : {}
+                  ) : lookup(svi, "name_prefix", "") != "" ? (
+                  { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}${svi.name_prefix}") }
+                ) : {}
+              ]...)
+            } : {}
+          ),
+          (
+            sk == "security_groups" && sv != null ? {
+              security_groups = [
+                for sg in sv : (
+                  sg.id != null ? sg.id : sg.name != null && lookup(local.secgrp_idmap_with_prefixname, "${local.module_prefix}${sg.name}", null) != null ? local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg.name}"] : null
+                )
+              ]
+            } : {}
+          ),
+          (
+            sv == null ? {} : {
+              "${sk}" = sv
+            }
+          )
+        ][sk == "subnet" ? 0 : sk == "security_groups" ? 1 : 2]
+      ]...)
+    }
   )
 
+  mgmt_intf_index          = var.fgt_intf_mode == "1-arm" ? 0 : 1
   create_geneve_for_all_az = var.enable_cross_zone_load_balancing
   gwlb_ips                 = module.security-vpc-gwlb.gwlb_ips
   asg_health_check_type    = "ELB"
@@ -226,10 +303,7 @@ module "fgt_asg" {
       {
         created_from = "Terraform"
       }
-    ),
-    instance = {
-      test_tag = "tgw-test-tag"
-    }
+    )
   }
   depends_on = [
     module.security-vpc,
