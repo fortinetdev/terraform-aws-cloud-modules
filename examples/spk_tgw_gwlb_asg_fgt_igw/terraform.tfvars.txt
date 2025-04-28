@@ -214,5 +214,5 @@ enable_east_west_inspection = true
 
 ## Tag
 general_tags = {
-  "purpuse" = "ASG_TEST"
+  "purpose" = "ASG_TEST"
 }

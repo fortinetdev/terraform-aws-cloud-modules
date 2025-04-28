@@ -261,6 +261,12 @@ variable "dynamodb_table_name" {
   type        = string
 }
 
+variable "primary_scalein_protection" {
+  description = "If true, will set scale-in protection for the primary instance. Only works when enable_fgt_system_autoscale set to true. Default is false."
+  type        = bool
+  default     = false
+}
+
 variable "scale_policies" {
   description = <<-EOF
   Auto Scaling group scale policies.
@@ -391,6 +397,19 @@ variable "mgmt_intf_index" {
   description = "Management interface device index that will used on Lambda function to connect with FortiGate instance."
   type        = number
   default     = 0
+}
+
+variable "fmg_integration" {
+  description = "Register FortiGate instance to the FortiManager."
+  type = object({
+    ip                  = string
+    sn                  = string
+    autoscale_psksecret = string
+    fmg_password        = string
+    fgt_lic_mgmt        = optional(string, "fmg")
+    hb_interval         = optional(number, 10)
+  })
+  default = null
 }
 
 ## Tag related

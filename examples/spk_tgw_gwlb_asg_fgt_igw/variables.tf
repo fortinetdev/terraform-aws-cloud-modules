@@ -521,6 +521,14 @@ variable "asgs" {
           Options:
           - id : (Optional|string) ID of the Gateway.
           - name : (Optional|string) Name of the Gateway that created by this example.
+    - fmg_integration : (Optional|map) FortiManager infomation to intergrate with FortiManager. 
+      Options:
+        - ip : (Required|string) FortiManager public IP.
+        - sn : (Required|string) FortiManager serial number.
+        - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
+        - fmg_password : (Required|string) FortiManager password.
+        - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
+        - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
     Auto Scale Group
     - asg_max_size : (Required|number) Maximum size of the Auto Scaling Group.
     - asg_min_size : (Required|number) Minimum size of the Auto Scaling Group.
@@ -528,6 +536,7 @@ variable "asgs" {
     - create_dynamodb_table : (Optional|bool) If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false.
     - dynamodb_table_name : (Required|string) DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP.
     - privatelink_security_groups : (Optional|string) Security group name list to create interface endpoint.
+    - primary_scalein_protection : (Optional|bool) If true, will set scale-in protection for the primary instance. Only works when enable_fgt_system_autoscale set to true. Default is false.
     - scale_policies : (Optional|map) Auto Scaling group scale policies.
       Key is policy name. Options for values of parameter scale_policies:
         - policy_type               : (Required|string) Policy type, either "SimpleScaling", "StepScaling", "TargetTrackingScaling", or "PredictiveScaling".
@@ -593,6 +602,143 @@ variable "fgt_intf_mode" {
     condition     = contains(["1-arm", "2-arm"], var.fgt_intf_mode)
     error_message = "Value of variable fgt_intf_mode can not be identified. Available opitons: 1-arm, 2-arm."
   }
+}
+
+variable "fgt_config_shared" {
+  description = <<-EOF
+  Format:
+  ```
+    fgt_config_shared = {
+          \<Option\> = \<Option value\>
+    }
+  ```
+  Options:
+    - ami_id : (Optional|string) The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version.
+    - fgt_version : (Optional|string) FortiGate version for the FortiGate instances. If the whole version been provided, please make sure the version is exist. If part of version been provided, such as 7.2, will using the latest release of this version.
+    - instance_type : (Optional|string) Instance type for the FortiGate instances. Default is c5.xlarge.
+    - license_type : (Optional|string) License type for the FortiGate instances. Options: on_demand, byol. Default is on_demand.
+    - fgt_hostname : (Optional|string) FortiGate instance hostname.
+    - fgt_password : (Required|string) FortiGate instance login password. This is required for BYOL type of FortiGate instance since we need to upload the license to the instance by lambda function.
+    - fgt_multi_vdom : (Optional|bool) Flag of FortiGate instance vdom type. `true` will be multi-vdom mode. `false` will be single-vdom mode. Default is `false`.
+    - enable_public_ip : (Optional|bool) Flag of whether create public IP for FortiGate instance. Default is `true` if variable fgt_access_internet_mode set to 'eip', `false` if set 'nat_gw'.
+    - lic_folder_path : (Optional|string) Folder path of FortiGate license files.
+    - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files or token json file.
+    - fortiflex_refresh_token : (Optional|string) Refresh token used for FortiFlex.
+    - fortiflex_username : (Optional|string) Username of FortiFlex API user.
+    - fortiflex_password : (Optional|string) Password of FortiFlex API user.
+    - fortiflex_sn_list : (Optional|list) Serial number list from FortiFlex account that used to activate FortiGate instance.
+    - fortiflex_configid_list : (Optional|list) Config ID list from FortiFlex account that used to activate FortiGate instance.
+    - keypair_name : (Required|string) The keypair name for accessing the FortiGate instances.
+    - enable_fgt_system_autoscale : (Optional|bool) If true, FotiGate system auto-scale will be set.
+    - fgt_system_autoscale_psksecret : (Optional|string) FotiGate system auto-scale psksecret.
+    - fgt_login_port_number : (Optional|string) The port number for the FortiGate instance. Should set this parameter if the port number for FortiGate instance login is not 443.
+    - user_conf_content: (Optional|string) User configuration in CLI format that will applied to the FortiGate instance.
+        The module do not cover the firewall policy generation. So, user should configure the firewall policy by this argumet.
+        FortiGate instance port name format:
+          1. For FortiGate port, the name should be 'port'+(device_index + 1). For example, if the device_index is 0, the the port name will be 'port1'.
+          2. For interface tunnel with GENEVE protocol (used for connecting with GWLB target group), the name will be 'geneve-az<NUMBER>'. Check 'az_name_map' of the output of template, which is map of Geneve tunnel name to the AZ name that supported in Security VPC.
+    - user_conf_file_path : (Optional|string) User configuration file path that will applied to FortiGate instance.
+    - user_conf_s3 : (Optional|map(list(string))) User configuration files in AWS S3 that will applied to FortiGate instance.
+        The key is the Bucket name, and the value is a list of key names in this Bucket.
+    - intf_security_group : (Required|map) Security group map for FortiGate instance instances.
+      Options:
+        - login_port : (Required|string) Security group name for the login port of FortiGate instance.
+        - internal_port : (Required|string) Security group name for the internal traffic port of FortiGate instance.
+    - extra_network_interfaces : (Optional|map) Extra network interfaces for the FortiGate instance. 
+      Options:
+        - device_index       : (Required|int) Integer to define the network interface index. Device index starting from 1 if fgt_intf_mode set to 1-arm, 2 for 2-arm.
+        - vdom               : (Optional|string) Vdom name that the interface belongs to. Only works when vdom mode is multi-vdom. Default will be root if not set and vdom mode is multi-vdom.
+        - description        : (Optional|string) Description for the network interface.
+        - source_dest_check  : (Optional|bool) Whether to enable source destination checking for the ENI. Defaults false.
+        - enable_public_ip   : (Optional|bool) Whether to assign a public IP for the ENI. Defaults to false.
+        - public_ipv4_pool   : (Optional|string) Specify EC2 IPv4 address pool. If not set, Amazon's poll will be used. Only useful when `enable_public_ip` is set to true.
+        - mgmt_intf          : (Optional|bool) Whether this interface is management interface. If set to true, will set defaultgw to true for this interface on FortiGate instance. Default is false.
+        - subnet             : (Required|list(map)) Subnet infomation to create the interface.
+          Options:
+          - id : (Optional|string) ID of the Subnet.
+          - name_prefix : (Optional|string) Name prefix of the Subnet that managed by this example.
+          - zone_name   : (Optional|string) Zone name of the subnet. Required if id been provided.
+        - security_groups    : (Optional|list(map)) List of map of security group to assign to the ENI. Defaults null.
+          Options:
+          - id : (Optional|string) ID of the Gateway.
+          - name : (Optional|string) Name of the Gateway that created by this example.
+    - fmg_integration : (Optional|map) FortiManager infomation to intergrate with FortiManager. 
+      Options:
+        - ip : (Required|string) FortiManager public IP.
+        - sn : (Required|string) FortiManager serial number.
+        - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
+        - fmg_password : (Required|string) FortiManager password.
+        - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
+        - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
+    
+  Example:
+  ```
+  fgt_config_shared = {
+    fgt_version = "7.2"
+    fgt_password = "ftnt"
+    keypair_name = "keypair1"
+    intf_security_group = {
+      login_port    = "secgrp1"
+      internal_port = "secgrp1"
+    }
+  }
+  ```
+  EOF
+  type = object({
+    ami_id                         = optional(string)
+    fgt_version                    = optional(string)
+    instance_type                  = optional(string)
+    license_type                   = optional(string)
+    fgt_hostname                   = optional(string)
+    fgt_password                   = optional(string)
+    fgt_multi_vdom                 = optional(bool)
+    enable_public_ip               = optional(bool)
+    lic_folder_path                = optional(string)
+    lic_s3_name                    = optional(string)
+    fortiflex_refresh_token        = optional(string)
+    fortiflex_username             = optional(string)
+    fortiflex_password             = optional(string)
+    fortiflex_sn_list              = optional(list(string))
+    fortiflex_configid_list        = optional(list(string))
+    keypair_name                   = optional(string)
+    enable_fgt_system_autoscale    = optional(bool)
+    fgt_system_autoscale_psksecret = optional(string)
+    fgt_login_port_number          = optional(string)
+    user_conf_content              = optional(string, "")
+    user_conf_file_path            = optional(string, "")
+    user_conf_s3                   = optional(map(list(string)))
+    intf_security_group = optional(object({
+      login_port    = optional(string)
+      internal_port = optional(string)
+    }))
+    extra_network_interfaces = optional(map(object({
+      device_index      = optional(number)
+      vdom              = optional(string)
+      description       = optional(string)
+      source_dest_check = optional(bool)
+      enable_public_ip  = optional(bool)
+      public_ipv4_pool  = optional(string)
+      mgmt_intf         = optional(bool)
+      subnet = optional(list(object({
+        id          = optional(string)
+        name_prefix = optional(string)
+        zone_name   = optional(string)
+      })))
+      security_groups = optional(list(object({
+        id   = optional(string)
+        name = optional(string)
+      })))
+    })), {})
+    fmg_integration = optional(object({
+      ip                  = optional(string)
+      sn                  = optional(string)
+      autoscale_psksecret = optional(string)
+      fmg_password        = optional(string)
+      fgt_lic_mgmt        = optional(string)
+      hb_interval         = optional(number)
+    }), null)
+  })
+  default = {}
 }
 
 ## Cloudwatch Alarm 

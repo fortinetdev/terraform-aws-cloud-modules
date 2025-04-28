@@ -139,7 +139,7 @@ region     = "<YOUR-OWN-VALUE>" # e.g. "us-east-2"
       keypair_name = "terr-test-us-east"
       lic_file_path = "${path.root}/fgt_lic1.lic"
       # instance_type  = ""
-      # fortiflex_sn = ""
+      # fortiflex_token = ""
       fgt_admin_https_port = 8443
       fgt_admin_ssh_port = 8822
       cpu_options = {
@@ -188,7 +188,7 @@ region     = "<YOUR-OWN-VALUE>" # e.g. "us-east-2"
       fgt_password = "fortinet"
       keypair_name = "terr-test-us-east"
       lic_file_path = "${path.root}/fgt_lic2.lic"
-      # fortiflex_sn = ""
+      # fortiflex_token = ""
       fgt_admin_https_port = 8443
       fgt_admin_ssh_port = 8822
       cpu_options = {
@@ -235,5 +235,5 @@ region     = "<YOUR-OWN-VALUE>" # e.g. "us-east-2"
 
   ## Tag
   general_tags = {
-    "purpuse" = "Terraform_TEST"
+    "purpose" = "Terraform_TEST"
   }

@@ -277,41 +277,49 @@ module "fgt_asg" {
   for_each = var.asgs
   # FortiGate instance template
   template_name                  = lookup(each.value, "template_name", "")
-  ami_id                         = lookup(each.value, "ami_id", "")
-  fgt_version                    = lookup(each.value, "fgt_version", "")
-  instance_type                  = lookup(each.value, "instance_type", "c5n.xlarge")
-  license_type                   = lookup(each.value, "license_type", "on_demand")
-  fgt_hostname                   = lookup(each.value, "fgt_hostname", "")
-  fgt_password                   = each.value.fgt_password
-  fgt_multi_vdom                 = lookup(each.value, "fgt_multi_vdom", false)
-  lic_folder_path                = lookup(each.value, "lic_folder_path", null)
-  lic_s3_name                    = lookup(each.value, "lic_s3_name", null)
-  fortiflex_refresh_token        = lookup(each.value, "fortiflex_refresh_token", "")
-  fortiflex_username             = lookup(each.value, "fortiflex_username", "")
-  fortiflex_password             = lookup(each.value, "fortiflex_password", "")
-  fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", [])
-  fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", [])
-  keypair_name                   = each.value.keypair_name
-  enable_fgt_system_autoscale    = lookup(each.value, "enable_fgt_system_autoscale", false)
-  fgt_system_autoscale_psksecret = lookup(each.value, "fgt_system_autoscale_psksecret", "")
-  fgt_login_port_number          = lookup(each.value, "fgt_login_port_number", "")
+  ami_id                         = lookup(each.value, "ami_id", null) != null ? each.value.ami_id : lookup(var.fgt_config_shared, "ami_id", null) != null ? var.fgt_config_shared.ami_id : ""
+  fgt_version                    = lookup(each.value, "fgt_version", null) != null ? each.value.fgt_version : lookup(var.fgt_config_shared, "fgt_version", null) != null ? var.fgt_config_shared.fgt_version : ""
+  instance_type                  = lookup(each.value, "instance_type", null) != null ? each.value.instance_type : lookup(var.fgt_config_shared, "instance_type", null) != null ? var.fgt_config_shared.instance_type : "c5n.xlarge"
+  license_type                   = lookup(each.value, "license_type", null) != null ? each.value.license_type : lookup(var.fgt_config_shared, "license_type", null) != null ? var.fgt_config_shared.license_type : "on_demand"
+  fgt_hostname                   = lookup(each.value, "fgt_hostname", null) != null ? each.value.fgt_hostname : lookup(var.fgt_config_shared, "fgt_hostname", null) != null ? var.fgt_config_shared.fgt_hostname : ""
+  fgt_password                   = lookup(each.value, "fgt_password", null) != null ? each.value.fgt_password : lookup(var.fgt_config_shared, "fgt_password", null)
+  fgt_multi_vdom                 = lookup(each.value, "fgt_multi_vdom", null) != null ? each.value.fgt_multi_vdom : lookup(var.fgt_config_shared, "fgt_multi_vdom", null) != null ? var.fgt_config_shared.fgt_multi_vdom : false
+  lic_folder_path                = lookup(each.value, "lic_folder_path", null) != null ? each.value.lic_folder_path : lookup(var.fgt_config_shared, "lic_folder_path", null)
+  lic_s3_name                    = lookup(each.value, "lic_s3_name", null) != null ? each.value.lic_s3_name : lookup(var.fgt_config_shared, "lic_s3_name", null)
+  fortiflex_refresh_token        = lookup(each.value, "fortiflex_refresh_token", null) != null ? each.value.fortiflex_refresh_token : lookup(var.fgt_config_shared, "fortiflex_refresh_token", null) != null ? var.fgt_config_shared.fortiflex_refresh_token : ""
+  fortiflex_username             = lookup(each.value, "fortiflex_username", null) != null ? each.value.fortiflex_username : lookup(var.fgt_config_shared, "fortiflex_username", null) != null ? var.fgt_config_shared.fortiflex_username : ""
+  fortiflex_password             = lookup(each.value, "fortiflex_password", null) != null ? each.value.fortiflex_password : lookup(var.fgt_config_shared, "fortiflex_password", null) != null ? var.fgt_config_shared.fortiflex_password : ""
+  fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", null) != null ? each.value.fortiflex_sn_list : lookup(var.fgt_config_shared, "fortiflex_sn_list", null) != null ? var.fgt_config_shared.fortiflex_sn_list : []
+  fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", null) != null ? each.value.fortiflex_configid_list : lookup(var.fgt_config_shared, "fortiflex_configid_list", null) != null ? var.fgt_config_shared.fortiflex_configid_list : []
+  keypair_name                   = lookup(each.value, "keypair_name", null) != null ? each.value.keypair_name : lookup(var.fgt_config_shared, "keypair_name", null)
+  enable_fgt_system_autoscale    = lookup(each.value, "enable_fgt_system_autoscale", null) != null ? each.value.enable_fgt_system_autoscale : lookup(var.fgt_config_shared, "enable_fgt_system_autoscale", null) != null ? var.fgt_config_shared.enable_fgt_system_autoscale : false
+  fgt_system_autoscale_psksecret = lookup(each.value, "fgt_system_autoscale_psksecret", null) != null ? each.value.fgt_system_autoscale_psksecret : lookup(var.fgt_config_shared, "fgt_system_autoscale_psksecret", null) != null ? var.fgt_config_shared.fgt_system_autoscale_psksecret : ""
+  fgt_login_port_number          = lookup(each.value, "fgt_login_port_number", null) != null ? each.value.fgt_login_port_number : lookup(var.fgt_config_shared, "fgt_login_port_number", null) != null ? var.fgt_config_shared.fgt_login_port_number : ""
   user_conf = (
-    lookup(each.value, "user_conf_content", "") != "" && lookup(each.value, "user_conf_file_path", "") != "" ?
-    format("%s\n%s", file(each.value["user_conf_file_path"]), each.value["user_conf_content"]) :
-    lookup(each.value, "user_conf_file_path", "") != "" ? file(each.value["user_conf_file_path"]) : lookup(each.value, "user_conf_content", "")
+    (
+      lookup(each.value, "user_conf_content", "") == "" &&
+      lookup(each.value, "user_conf_file_path", "") == "" &&
+      lookup(var.fgt_config_shared, "user_conf_content", "") == "" &&
+      lookup(var.fgt_config_shared, "user_conf_file_path", "") == ""
+      ) ? "" : format(
+      "%s\n%s",
+      lookup(each.value, "user_conf_file_path", "") != "" ? file(each.value.user_conf_file_path) : lookup(var.fgt_config_shared, "user_conf_file_path", "") != "" ? file(var.fgt_config_shared.user_conf_file_path) : "",
+      lookup(each.value, "user_conf_content", "") != "" ? each.value.user_conf_content : lookup(var.fgt_config_shared, "user_conf_content", "")
+    )
   )
-
-  user_conf_s3 = lookup(each.value, "user_conf_s3", {})
+  user_conf_s3    = lookup(each.value, "user_conf_s3", null) != null ? each.value.user_conf_s3 : lookup(var.fgt_config_shared, "user_conf_s3", null) != null ? var.fgt_config_shared.user_conf_s3 : {}
+  fmg_integration = lookup(each.value, "fmg_integration", null) != null ? each.value.fmg_integration : lookup(var.fgt_config_shared, "fmg_integration", null)
 
   # Auto Scale Group
-  availability_zones    = var.availability_zones
-  asg_name              = each.key
-  asg_max_size          = each.value.asg_max_size
-  asg_min_size          = each.value.asg_min_size
-  asg_desired_capacity  = lookup(each.value, "asg_desired_capacity", null)
-  scale_policies        = lookup(each.value, "scale_policies", {})
-  create_dynamodb_table = lookup(each.value, "create_dynamodb_table", null)
-  dynamodb_table_name   = lookup(each.value, "dynamodb_table_name", null)
+  availability_zones         = var.availability_zones
+  asg_name                   = each.key
+  asg_max_size               = each.value.asg_max_size
+  asg_min_size               = each.value.asg_min_size
+  asg_desired_capacity       = lookup(each.value, "asg_desired_capacity", null)
+  scale_policies             = lookup(each.value, "scale_policies", {})
+  create_dynamodb_table      = lookup(each.value, "create_dynamodb_table", null)
+  dynamodb_table_name        = lookup(each.value, "dynamodb_table_name", null)
+  primary_scalein_protection = lookup(each.value, "primary_scalein_protection", false)
   dynamodb_privatelink = var.enable_privatelink_dydb ? {
     vpc_id                      = module.security-vpc.vpc_id
     region                      = var.region
@@ -324,30 +332,30 @@ module "fgt_asg" {
         mgmt = {
           device_index      = 0
           subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
-          enable_public_ip  = lookup(each.value, "enable_public_ip", var.fgt_access_internet_mode == "eip" ? true : false)
+          enable_public_ip  = lookup(each.value, "enable_public_ip", null) != null ? each.value.enable_public_ip : lookup(var.fgt_config_shared, "enable_public_ip", null) != null ? var.fgt_config_shared.enable_public_ip : var.fgt_access_internet_mode == "eip" ? true : false
           to_gwlb           = true
           source_dest_check = true
-          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
           mgmt_intf         = true
+          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${lookup(each.value, "intf_security_group", null) != null ? each.value.intf_security_group["login_port"] : lookup(var.fgt_config_shared, "intf_security_group", null) != null ? var.fgt_config_shared.intf_security_group["login_port"] : ""}"]]
         }
         }) : jsonencode({
         mgmt = {
           device_index      = 1
           subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
-          enable_public_ip  = lookup(each.value, "enable_public_ip", var.fgt_access_internet_mode == "eip" ? true : false)
+          enable_public_ip  = lookup(each.value, "enable_public_ip", null) != null ? each.value.enable_public_ip : lookup(var.fgt_config_shared, "enable_public_ip", null) != null ? var.fgt_config_shared.enable_public_ip : var.fgt_access_internet_mode == "eip" ? true : false
           source_dest_check = true
-          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["login_port"]}"]]
           mgmt_intf         = true
+          security_groups   = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${lookup(each.value, "intf_security_group", null) != null ? each.value.intf_security_group["login_port"] : lookup(var.fgt_config_shared, "intf_security_group", null) != null ? var.fgt_config_shared.intf_security_group["login_port"] : ""}"]]
         },
         internal_traffic = {
           device_index    = 0
           to_gwlb         = true
           subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_internal_") }
-          security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${each.value.intf_security_group["internal_port"]}"]]
+          security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${lookup(each.value, "intf_security_group", null) != null ? each.value.intf_security_group["login_port"] : lookup(var.fgt_config_shared, "intf_security_group", null) != null ? var.fgt_config_shared.intf_security_group["login_port"] : ""}"]]
         }
       })
     ),
-    lookup(each.value, "extra_network_interfaces", null) == null ? {} : {
+    lookup(each.value, "extra_network_interfaces", null) != null ? {
       for k, v in each.value.extra_network_interfaces : k => merge([
         for sk, sv in v : [
           (
@@ -379,7 +387,39 @@ module "fgt_asg" {
           )
         ][sk == "subnet" ? 0 : sk == "security_groups" ? 1 : 2]
       ]...)
-    }
+      } : lookup(var.fgt_config_shared, "extra_network_interfaces", null) != null ? {
+      for k, v in var.fgt_config_shared.extra_network_interfaces : k => merge([
+        for sk, sv in v : [
+          (
+            sk == "subnet" && sv != null ? {
+              subnet_id_map = merge([
+                for svi in sv : lookup(svi, "id", "") != "" ? (
+                  lookup(svi, "zone_name", "") != "" ? {
+                    "${svi.zone_name}" = svi.id
+                  } : {}
+                  ) : lookup(svi, "name_prefix", "") != "" ? (
+                  { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}${svi.name_prefix}") }
+                ) : {}
+              ]...)
+            } : {}
+          ),
+          (
+            sk == "security_groups" && sv != null ? {
+              security_groups = [
+                for sg in sv : (
+                  sg.id != null ? sg.id : sg.name != null && lookup(local.secgrp_idmap_with_prefixname, "${local.module_prefix}${sg.name}", null) != null ? local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg.name}"] : null
+                )
+              ]
+            } : {}
+          ),
+          (
+            sv == null ? {} : {
+              "${sk}" = sv
+            }
+          )
+        ][sk == "subnet" ? 0 : sk == "security_groups" ? 1 : 2]
+      ]...)
+    } : {}
   )
 
   mgmt_intf_index          = var.fgt_intf_mode == "1-arm" ? 0 : 1

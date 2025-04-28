@@ -399,11 +399,11 @@ variable "route_tables" {
 ## FortiGate configuration
 variable "fgts" {
   description = <<-EOF
-  Auto Scaling group map.
+  FortiGate instance map.
   Format:
   ```
-    asgs = {
-        \<ASG NAME\> = {
+    fgts = {
+        \<FORTIGATE NAME\> = {
             \<Option\> = \<Option value\>
         }
     }
@@ -418,7 +418,7 @@ variable "fgts" {
     - fgt_password : (Optional|string) FortiGate instance login password. This is required for BYOL type of FortiGate instance since we need to upload the license to the instance by lambda function.
     - fgt_multi_vdom : (Optional|bool) Flag of FortiGate instance vdom type. `true` will be multi-vdom mode. `false` will be single-vdom mode. Default is `false`.
     - lic_file_path : (Optional|string) File path of FortiGate license file.
-    - fortiflex_sn : (Optional|string) Serial number from FortiFlex account that used to activate FortiGate instance.
+    - fortiflex_token : (Optional|string) FortiFlex token that used to activate FortiGate instance.
     - keypair_name : (Required|string) The keypair name for accessing the FortiGate instances.
     - fgt_admin_https_port : (Optional|string) FortiGate instance HTTPS admin access port.
     - fgt_admin_ssh_port : (Optional|string) FortiGate instance SSH admin access port.
@@ -450,9 +450,8 @@ variable "fgts" {
   
   Example:
   ```
-  asgs = {
-    fgt_byol_asg = {
-      template_name = "fgt_asg_template"
+  fgts = {
+    fgt_byol = {
       fgt_version = "7.2"
       license_type = "byol"
       fgt_password = "ftnt"
@@ -490,7 +489,7 @@ variable "fgts" {
     fgt_password         = optional(string, "")
     fgt_multi_vdom       = optional(string, false)
     lic_file_path        = optional(string, "")
-    fortiflex_sn         = optional(string, "")
+    fortiflex_token      = optional(string, "")
     keypair_name         = string
     fgt_admin_https_port = optional(string, "")
     fgt_admin_ssh_port   = optional(string, "")

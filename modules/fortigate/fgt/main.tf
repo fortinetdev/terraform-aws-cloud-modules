@@ -60,10 +60,10 @@ locals {
     fgt_multi_vdom       = var.fgt_multi_vdom
     network_interfaces   = var.network_interfaces
     user_conf            = var.user_conf
-    fgt_license          = var.license_type == "byol" ? file("${var.lic_file_path}") : ""
+    fgt_license          = var.license_type == "byol" ? var.lic_file_path != "" ? file("${var.lic_file_path}") : "" : ""
     fgt_admin_https_port = var.fgt_admin_https_port
     fgt_admin_ssh_port   = var.fgt_admin_ssh_port
-    fortiflex_sn         = var.fortiflex_sn
+    fortiflex_token      = var.license_type == "byol" ? var.fortiflex_token : ""
   }
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
 }

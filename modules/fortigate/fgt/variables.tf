@@ -82,8 +82,8 @@ variable "lic_file_path" {
   type        = string
 }
 
-variable "fortiflex_sn" {
-  description = "FortiFlex serial number that used for BYOL type of FortiGate instance."
+variable "fortiflex_token" {
+  description = "FortiFlex token that used for BYOL type of FortiGate instance."
   default     = ""
   type        = string
 }

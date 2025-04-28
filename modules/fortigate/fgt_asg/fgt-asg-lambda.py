@@ -32,24 +32,26 @@ class Helper:
                 Helper.set_to_list(v)
 
 class NetworkInterface:
-    def __init__(self):
-        self.logger = logging.getLogger("network_interface")
-        self.logger.setLevel(logging.INFO)
+    def __init__(self, logger, fgt_vm_id=""):
+        self.logger = logger
         self.ec2_client = boto3.client("ec2")
         self.s3_client = boto3.client("s3")
         self.s3_bucket_name = os.getenv("lic_s3_name")
         self.intf_track_file_name = "intf_track.json"
+        self.fgt_vm_id = fgt_vm_id
 
-    def main(self, event):
-        self.logger.info(f"Do interface config")
-        self.fgt_vm_id = event["detail"]["EC2InstanceId"]
-        detail_type = event["detail-type"]
+    def set_vm_id(self, vm_id):
+        self.fgt_vm_id = vm_id
         self.instance_detail = self.ec2_client.describe_instances(InstanceIds=[self.fgt_vm_id])
         self.fgt_vm_intfs = {}
-        for intf in self.instance_detail['Reservations'][0]['Instances'][0]['NetworkInterfaces']:
-            cur_device_index = str(intf.get("Attachment").get("DeviceIndex"))
-            self.fgt_vm_intfs[cur_device_index] = intf
+        if self.instance_detail and len(self.instance_detail['Reservations']) > 0 and len(self.instance_detail['Reservations'][0]['Instances']) > 0:
+            for intf in self.instance_detail['Reservations'][0]['Instances'][0]['NetworkInterfaces']:
+                cur_device_index = str(intf.get("Attachment").get("DeviceIndex"))
+                self.fgt_vm_intfs[cur_device_index] = intf
 
+    def main(self, detail_type):
+        self.logger.info(f"Do interface config")
+        
         if detail_type == "EC2 Instance-launch Lifecycle Action":
             self.do_launch()
         elif detail_type == "EC2 Instance-terminate Lifecycle Action":
@@ -61,8 +63,6 @@ class NetworkInterface:
             self.logger.info(f"Can not identify detail-type: {detail_type}")
             return
         
-        self.complete_lifecycle(event)
-
     def do_launch(self):
         self.logger.info(f"Do launch fgt vm instance: {self.fgt_vm_id}")
         intf_setting = json.loads(os.getenv('network_interfaces'))
@@ -267,19 +267,6 @@ class NetworkInterface:
         except ClientError as e:
             self.logger.error(f"Error deleting network interface {cur_intf_id}: {e.response['Error']['Code']}, response: {response}")
 
-    def complete_lifecycle(self, event):
-        self.logger.info(f"Complete lifecycle action.")
-        asg_client = boto3.client('autoscaling')
-        event_detail = event["detail"]
-        try:
-            asg_client.complete_lifecycle_action(
-                LifecycleHookName=event_detail.get('LifecycleHookName', ""),
-                AutoScalingGroupName=event_detail.get('AutoScalingGroupName', ""),
-                LifecycleActionToken=event_detail.get('LifecycleActionToken', ""),
-                LifecycleActionResult='CONTINUE'
-            )
-        except ClientError as e:
-            self.logger.error(f"Error completing life cycle hook for instance: {e.response['Error']['Code']}")
 
     def lock_intf_track_file(self):
         self.logger.info("Lock interface track file from S3 bucket.")
@@ -446,20 +433,20 @@ class NetworkInterface:
         return b_exist
 
 class FgtConf:
-    def __init__(self, event):
-        self.logger = logging.getLogger("fgt_config")
-        self.logger.setLevel(logging.INFO)
+    def __init__(self, logger, fgt_vm_id=""):
+        self.logger = logger
         self.ec2_client = boto3.client("ec2")
         self.s3_client = boto3.client("s3")
         self.lambda_client = boto3.client("lambda")
 
         self.logger.info(f"Do FGT config.")
-        self.logger.info(f"Event detail:: {event}")
-        self.fgt_vm_id = event["detail"]["EC2InstanceId"]
-        self.detail_type = event["detail-type"]
+        self.fgt_vm_id = fgt_vm_id
         self.cookie = {}
         self.lic_track_file_name = "asg-fgt-lic-track.json"
+        self.s3_bucket_name = os.getenv("lic_s3_name")
+        self.need_license = os.getenv("need_license") == "true"
         self.enable_privatelink_dydb = os.getenv("enable_privatelink_dydb") == "true"
+        self.fgt_lic_mgmt = os.getenv("fgt_lic_mgmt")
         if not self.enable_privatelink_dydb:
             self.dynamodb_client = boto3.client("dynamodb")
             self.dynamodb_table_name = os.getenv("dynamodb_table_name")
@@ -469,14 +456,18 @@ class FgtConf:
         self.internal_lambda_name = os.getenv("internal_lambda_name")
         self.mgmt_intf_index = os.getenv("mgmt_intf_index")
         self.asg_name = os.getenv("asg_name")
+        self.primary_scalein_protection = os.getenv("primary_scalein_protection") == "true"
 
-    def main(self):
-        if self.detail_type == "EC2 Instance Launch Successful":
+    def set_vm_id(self, vm_id):
+        self.fgt_vm_id = vm_id
+
+    def main(self, detail_type):
+        if detail_type == "EC2 Instance Launch Successful":
             self.do_launch()
-        elif self.detail_type == "EC2 Instance-terminate Lifecycle Action":
+        elif detail_type == "EC2 Instance-terminate Lifecycle Action":
             self.do_terminate()
         else:
-            self.logger.debug(f"Can not identify detail-type: {self.detail_type}")
+            self.logger.debug(f"Can not identify detail-type: {detail_type}")
             return
     
     def do_launch(self):
@@ -505,9 +496,7 @@ class FgtConf:
         self.add_asg_instance_dydb(self.fgt_vm_id)
 
         # Upload license
-        need_license = os.getenv("need_license") == "true"
-        if need_license:
-            self.s3_bucket_name = os.getenv("lic_s3_name")
+        if self.need_license and self.fgt_lic_mgmt != "fmg":
             # Update Serial numbers
             b_succ = self.update_all_sn_list()
             b_succ = self.upload_license(fgt_private_ip, self.fgt_vm_id)
@@ -515,35 +504,34 @@ class FgtConf:
                 return
 
         # Configure the FortiGate instance
-        time.sleep(10)
-        self.intf_setting = json.loads(os.getenv('network_interfaces'))
-        self.fgt_az = instance_detail['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
-        self.fgt_primary_ip, self.fgt_primary_port = self.get_primary_ip(instance_detail['Reservations'][0]['Instances'][0])
+        if self.fgt_lic_mgmt != "fmg":
+            time.sleep(10)
+            self.intf_setting = json.loads(os.getenv('network_interfaces'))
+            self.fgt_az = instance_detail['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+            self.fgt_primary_ip, self.fgt_primary_port = self.get_primary_ip(instance_detail['Reservations'][0]['Instances'][0])
 
-        config_content = self.gen_config_content(self.fgt_vm_id)
-        b_succ = self.upload_config(config_content, fgt_private_ip)
+            config_content = self.gen_config_content(self.fgt_vm_id)
+            b_succ = self.upload_config(config_content, fgt_private_ip)
 
         
     def do_terminate(self):
-        need_license = os.getenv("need_license")
-        if not need_license:
-            return
-        self.s3_bucket_name = os.getenv("lic_s3_name")
         self.logger.info("Do terminate envent.")
-        # Update Serial numbers
-        b_succ = self.update_all_sn_list()
-        # Update license record 
-        b_updated = self.release_lic(self.fgt_vm_id)
-        if not b_updated:
-            used_sn_map = self.get_used_sn_map()
-            if self.fgt_vm_id in used_sn_map:
-                sn = used_sn_map.pop(self.fgt_vm_id)
-                self.update_used_sn_map(used_sn_map)
-                self.add_available_sn({sn})
-                # Deactive current token
-                oauth_token = self.get_fortiflex_oauth_token()
-                if oauth_token:
-                    self.stop_sn(sn, oauth_token)
+        # Upload license
+        if self.need_license and self.fgt_lic_mgmt != "fmg":
+            # Update Serial numbers
+            b_succ = self.update_all_sn_list()
+            # Update license record 
+            b_updated = self.release_lic(self.fgt_vm_id)
+            if not b_updated:
+                used_sn_map = self.get_used_sn_map()
+                if self.fgt_vm_id in used_sn_map:
+                    sn = used_sn_map.pop(self.fgt_vm_id)
+                    self.update_used_sn_map(used_sn_map)
+                    self.add_available_sn({sn})
+                    # Deactive current token
+                    oauth_token = self.get_fortiflex_oauth_token()
+                    if oauth_token:
+                        self.stop_sn(sn, oauth_token)
         # Update instance info on Dynamo DB
         self.remove_asg_instance_dydb(self.fgt_vm_id)
         if self.enable_fgt_system_autoscale:
@@ -594,15 +582,20 @@ class FgtConf:
         return p_ip, p_port
 
 # Invoke lambda function
-    def invoke_lambda(self, payload, invocation_type=""):
+    def invoke_lambda(self, payload, target_lambda, invocation_type=""):
         b_succ= False
         rst = {}
+        if target_lambda == "fgt":
+            fucnName = self.internal_lambda_name
+        else:
+            self.logger.error(f"Unknown target lambda function name: {target_lambda}")
+            return
         if invocation_type == "":
             invocation_type = 'RequestResponse'
         try:
             Helper.set_to_list(payload)
             response = self.lambda_client.invoke(
-                FunctionName = self.internal_lambda_name,
+                FunctionName = fucnName,
                 InvocationType = invocation_type,
                 Payload = json.dumps(payload)
             )
@@ -643,7 +636,7 @@ class FgtConf:
                     "license_content": license_content
                 }
             }
-            b_succ, response = self.invoke_lambda(payload)
+            b_succ, response = self.invoke_lambda(payload, "fgt")
             if b_succ:
                 used_sn_map = self.get_used_sn_map()
                 used_sn_map[fgt_vm_id] = sn_or_file_name
@@ -662,7 +655,7 @@ class FgtConf:
                     "license_content": lic_file_content
                 }
             }
-            b_succ, response = self.invoke_lambda(payload)
+            b_succ, response = self.invoke_lambda(payload, "fgt")
             # Update license track file if upload license successfully
             if b_succ:
                 self.logger.info("Upload license file success.")
@@ -1021,8 +1014,8 @@ class FgtConf:
                 b_exist = False
         return b_exist
 
- # FortiFlex
-  # FortiFlex API
+  # FortiFlex
+   # FortiFlex API
     def verify_oauth_token(self, oauth_token):
         self.logger.info("Verify FortiFlex OAuth token.")
         b_valid = False
@@ -1199,7 +1192,7 @@ class FgtConf:
         return b_succ
    
     def stop_sn(self, sn, oauth_token):
-        self.logger.info("Stop Serial Number License.")
+        self.logger.info(f"Stop Serial Number: {sn}.")
         b_succ = True
         url = "https://support.fortinet.com/ES/api/fortiflex/v2/entitlements/stop"
         header = {
@@ -1236,6 +1229,9 @@ class FgtConf:
         for configid in configid_list:
             cur_sn_list = self.get_sn_by_configid(configid)
             config_sn_list.extend(cur_sn_list)
+        used_sn_map = self.get_used_sn_map()
+        used_sn_set = set(used_sn_map.values())
+        config_sn_list.extend(used_sn_set)
         if not config_sn_list:
             return False
         all_sn_list = set(config_sn_list)
@@ -1248,8 +1244,6 @@ class FgtConf:
             # Update all_sn_list
             self.put_item_to_dydb("fortiflex", "all_sn_list", all_sn_list)
             # Update available_sn_list
-            used_sn_map = self.get_used_sn_map()
-            used_sn_set = set(used_sn_map.values())
             new_available_sn_list = all_sn_list - used_sn_set
             removed_sn_list = dydb_all_sn_list - all_sn_list
             if new_available_sn_list:
@@ -1348,6 +1342,23 @@ class FgtConf:
             self.logger.error(f"Could not update item tags for {resource_list}, error: {err}")
         return b_succ
 
+   # Set scale-in protection
+    def set_primary_scalein_protection(self, fgt_vm_id):
+        asg_client = boto3.client("autoscaling")
+        b_succ= False
+        if not fgt_vm_id:
+            return b_succ
+        try:
+            response = asg_client.set_instance_protection(
+                InstanceIds=[fgt_vm_id],
+                AutoScalingGroupName=self.asg_name,
+                ProtectedFromScaleIn=True
+            )
+            b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not set scale-in protection for {fgt_vm_id}, error: {err}")
+        return b_succ
+
   # AWS Dynamo DB operations
     def get_item_from_dydb(self, category, attributes):
         rst = {}
@@ -1361,7 +1372,7 @@ class FgtConf:
                         "attributes": attributes
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload)
+                b_succ, rst = self.invoke_lambda(payload, "fgt")
             else:
                 response = self.dynamodb_client.get_item(
                     TableName=self.dynamodb_table_name,
@@ -1392,7 +1403,7 @@ class FgtConf:
                         "attribute_content": attribute_content
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "Event")
+                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
             else:
                 aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
                 if not aws_format_content:
@@ -1428,7 +1439,7 @@ class FgtConf:
                         "attribute_content": attribute_content
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "Event")
+                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
             else:
                 if type(attribute_content) not in [set, int, float]:
                     self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
@@ -1468,7 +1479,7 @@ class FgtConf:
                         "attribute_content": attribute_content
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "Event")
+                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
             else:
                 aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
                 if not aws_format_content:
@@ -1603,6 +1614,21 @@ class FgtConf:
             self.logger.error(f"Could not remove instance ID to Dynamo DB table: {err}")
         return b_succ
 
+    def get_instance_dict(self, state_name_list):
+        self.logger.info(f"Get instance ID list with state of {state_name_list}.")
+        instance_detail = self.ec2_client.describe_instances(Filters=[
+                                {
+                                    'Name': 'instance-state-name',
+                                    'Values': state_name_list
+                                }
+                            ])
+        running_instance_dict = {}
+        for reservation in instance_detail['Reservations']:
+            for instance in reservation['Instances']:
+                cur_vm_id = instance.get('InstanceId')
+                running_instance_dict[cur_vm_id] = instance
+        return running_instance_dict
+    
 # FortiGate auto-scaling primary ip
     def get_primary(self):
         self.logger.info("Get primary instance information.")
@@ -1636,20 +1662,8 @@ class FgtConf:
             if self.fgt_login_port_number:
                 fgt_port = ":" + self.fgt_login_port_number
             # Get next primary instance
-            instance_detail = self.ec2_client.describe_instances(Filters=[
-                                    {
-                                        'Name': 'instance-state-name',
-                                        'Values': [
-                                            'running',
-                                        ]
-                                    }
-                                ])
-            self.logger.info(f"Instance detail: {instance_detail}")
-            running_instance_dict = {}
-            for reservation in instance_detail['Reservations']:
-                for instance in reservation['Instances']:
-                    cur_vm_id = instance.get('InstanceId')
-                    running_instance_dict[cur_vm_id] = instance
+            state_name_list = ["running"]
+            running_instance_dict = self.get_instance_dict(state_name_list)
             b_succ = False
             fgt_instanceid_list_dict = self.get_asg_instance_list_dydb()
             fgt_instanceid_list = []
@@ -1692,6 +1706,8 @@ class FgtConf:
             # Update primary track Dynamo DB
             if b_succ:
                 self.update_primary(fgt_vm_id, self.fgt_primary_ip)
+                if self.primary_scalein_protection:
+                    self.set_primary_scalein_protection(fgt_vm_id)
             else:
                 self.update_primary("", "")
 
@@ -1784,18 +1800,6 @@ class FgtConf:
 
                 if fgt_multi_vdom:
                     rst += f"end\n"
-        # User configuration
-        if user_conf:
-            rst += user_conf
-            rst += "\n"
-        
-        if user_conf_s3:
-            for bucket_name, key_list in user_conf_s3.items():
-                for key_name in key_list:
-                    cur_user_conf = self.get_s3_file_content(bucket_name, key_name)
-                    if cur_user_conf:
-                        rst += cur_user_conf
-                        rst += "\n"
 
         # FortiGate instance auto-scaling configuration
         if self.enable_fgt_system_autoscale:
@@ -1804,6 +1808,8 @@ class FgtConf:
                 self.update_primary(fgt_vm_id, self.fgt_primary_ip)
                 primary_instance_id = fgt_vm_id
                 primary_ip = self.fgt_primary_ip
+                if self.primary_scalein_protection:
+                    self.set_primary_scalein_protection(fgt_vm_id)
             autoscale_role = "Primary"
             if primary_instance_id == fgt_vm_id:
                 temp_str = f"""
@@ -1833,6 +1839,20 @@ class FgtConf:
                     'Value': autoscale_role
                 }]
             )
+
+        # User configuration
+        if user_conf:
+            rst += user_conf
+            rst += "\n"
+        
+        if user_conf_s3:
+            for bucket_name, key_list in user_conf_s3.items():
+                for key_name in key_list:
+                    cur_user_conf = self.get_s3_file_content(bucket_name, key_name)
+                    if cur_user_conf:
+                        rst += cur_user_conf
+                        rst += "\n"
+                        
         return rst
 
     def upload_config(self, config_content, fgt_private_ip):
@@ -1845,7 +1865,7 @@ class FgtConf:
                 "config_content": config_content
             }
         }
-        b_succ, response = self.invoke_lambda(payload, "Event")
+        b_succ, response = self.invoke_lambda(payload, "fgt", "Event")
         return b_succ
 
     def get_s3_file_content(self, bucket_name, key_name):
@@ -1871,16 +1891,73 @@ class FgtConf:
                 "fgt_vm_id": fgt_vm_id
             }
         }
-        b_succ, response = self.invoke_lambda(payload)
+        b_succ, response = self.invoke_lambda(payload, "fgt")
         return b_succ
- 
+
+def clean_terminated_vms(logger, intf_object, fgtconf_object):
+    logger.info("Clean up terminated vms.")
+    # Get terminated or terminating instance ID list
+    state_name_list = ["terminated", "shutting-down"]
+    terminated_instance_dict = fgtconf_object.get_instance_dict(state_name_list)
+    # Get existing ASG created instance ID list
+    fgt_instanceid_list_dict = fgtconf_object.get_asg_instance_list_dydb()
+    fgt_instanceid_list = []
+    for instance_dict in fgt_instanceid_list_dict:
+        fgt_instanceid_list.extend(instance_dict.values())
+    # Check instances that been terminated but not been clean up. This may happens when terminate event not been triggered, like manually terminate the instance.
+    clean_id_list = []
+    for vm_id in fgt_instanceid_list:
+        if vm_id in terminated_instance_dict:
+            clean_id_list.append(vm_id)
+    # Clean terminated instances
+    for vm_id in clean_id_list:
+        intf_object.set_vm_id(vm_id)
+        intf_object.do_terminate()
+
+        fgtconf_object.set_vm_id(vm_id)
+        fgtconf_object.do_terminate()
+
+def complete_lifecycle(logger, event_detail):
+    logger.info("Complete lifecycle action.")
+    asg_client = boto3.client('autoscaling')
+    try:
+        asg_client.complete_lifecycle_action(
+            LifecycleHookName=event_detail.get('LifecycleHookName', ""),
+            AutoScalingGroupName=event_detail.get('AutoScalingGroupName', ""),
+            LifecycleActionToken=event_detail.get('LifecycleActionToken', ""),
+            LifecycleActionResult='CONTINUE'
+        )
+    except ClientError as e:
+        logger.error(f"Error completing life cycle hook for instance: {e.response['Error']['Code']}")
+
 def lambda_handler(event, context):
+    logger = logging.getLogger("fgt_asg_lambda")
+    logger.setLevel(logging.INFO)
+    event_detail = event["detail"]
+    fgt_vm_id = event["detail"]["EC2InstanceId"]
+    detail_type = event["detail-type"]
+
+    # Initiate objects
+    intf_object = NetworkInterface(logger)
+    fgtconf_object = FgtConf(logger)
+
+    # If detail_type is launch related, check and clean the VMs before main operation
+    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance Launch Successful"]:
+        clean_terminated_vms(logger, intf_object, fgtconf_object)
+
     ## Network Interface operations
-    intfObject = NetworkInterface()
-    intfObject.main(event)
+    intf_object.set_vm_id(fgt_vm_id)
+    intf_object.main(detail_type)
 
     ## FortiGate configuration operations
-    fgtObject = FgtConf(event)
-    fgtObject.main()
+    fgtconf_object.set_vm_id(fgt_vm_id)
+    fgtconf_object.main(detail_type)
 
+    # If detail_type is terminate related, check and clean the VMs after main operation
+    if detail_type == "EC2 Instance-terminate Lifecycle Action":
+        clean_terminated_vms(logger, intf_object, fgtconf_object)
+    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+        complete_lifecycle(logger, event_detail)
     return {}
+
+

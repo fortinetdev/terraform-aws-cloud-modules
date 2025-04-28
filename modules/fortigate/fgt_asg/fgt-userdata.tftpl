@@ -1,18 +1,31 @@
-%{ if fgt_hostname != "" ~}
+%{ if fmg_integration != null ~}
+config system central-management
+    set type fortimanager
+    set fmg "${fmg_integration.ip}"
+    set serial-number "${fmg_integration.sn}"
+end
+config system auto-scale
+    set status enable
+    set sync-interface "${fgt_primary_port}"
+    set hb-interval ${fmg_integration.hb_interval}
+    set callback-url "${fmg_integration.ip}"
+    set cloud-mode ums
+    set psksecret "${fmg_integration.autoscale_psksecret}"
+end
+exec central-mgmt register-device ${fmg_integration.sn} ${fmg_integration.fmg_password}
+%{ endif ~}
+
+%{ if fgt_hostname != "" || fgt_login_port_number != "" || fgt_multi_vdom ~}
 config system global
+    %{ if fgt_hostname != "" ~}
     set hostname ${fgt_hostname}
-end
-%{ endif ~}
-
-%{ if fgt_login_port_number != "" ~}
-config system global
+    %{ endif ~}
+    %{ if fgt_login_port_number != "" ~}
     set admin-sport ${fgt_login_port_number}
-end
-%{ endif ~}
-
-%{ if fgt_multi_vdom ~}
-config system global
+    %{ endif ~}
+    %{ if fgt_multi_vdom ~}
     set vdom-mode multi-vdom
+    %{ endif ~}
 end
 %{ endif ~}
 

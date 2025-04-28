@@ -254,5 +254,5 @@ enable_cross_zone_load_balancing = true
 
 ## Tag
 general_tags = {
-  "purpuse" = "ASG_TEST"
+  "purpose" = "ASG_TEST"
 }

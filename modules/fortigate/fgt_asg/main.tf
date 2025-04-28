@@ -28,6 +28,8 @@ locals {
     fgt_multi_vdom        = var.fgt_multi_vdom
     network_interfaces    = var.network_interfaces
     fgt_login_port_number = var.fgt_login_port_number
+    fmg_integration       = var.fmg_integration
+    fgt_primary_port      = "port${[for e in var.network_interfaces : e.device_index if lookup(e, "mgmt_intf", false)][0]}"
   }
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
 }
@@ -209,6 +211,7 @@ resource "aws_iam_role_policy" "iam_policy" {
           "ec2:CreateTags",
           "autoscaling:CompleteLifecycleAction",
           "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:SetInstanceProtection",
           "s3:*",
           "s3-object-lambda:*",
           "lambda:InvokeFunction",
@@ -363,6 +366,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       network_interfaces             = jsonencode(var.network_interfaces)
       lic_s3_name                    = local.lic_s3_name
       need_license                   = var.license_type == "byol" ? true : false
+      fgt_lic_mgmt                   = var.fmg_integration == null ? "" : var.fmg_integration.fgt_lic_mgmt
       gwlb_ips                       = jsonencode(var.gwlb_ips)
       fgt_multi_vdom                 = var.fgt_multi_vdom
       create_geneve_for_all_az       = var.create_geneve_for_all_az
@@ -379,6 +383,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       fortiflex_configid_list        = jsonencode(var.fortiflex_configid_list)
       az_name_map                    = jsonencode(var.az_name_map)
       mgmt_intf_index                = var.mgmt_intf_index
+      primary_scalein_protection     = var.enable_fgt_system_autoscale && var.primary_scalein_protection
     }
   }
 

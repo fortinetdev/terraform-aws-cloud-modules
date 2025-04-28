@@ -84,18 +84,17 @@ module "security_route_table" {
   ]
 }
 
-# Create FortiGate Auto Scaling group
 locals {
   secgrp_idmap_with_prefixname = {
     for k, v in module.security-vpc.security_group : v.prefix_name => v.id
   }
 }
+
 module "fgts" {
   source   = "../../modules/fortigate/fgt"
   for_each = var.fgts
 
-  module_prefix = local.module_prefix
-  # FortiGate instance template
+  module_prefix        = local.module_prefix
   instance_name        = each.key
   ami_id               = each.value.ami_id
   fgt_version          = each.value.fgt_version
@@ -105,7 +104,7 @@ module "fgts" {
   fgt_password         = each.value.fgt_password
   fgt_multi_vdom       = each.value.fgt_multi_vdom
   lic_file_path        = each.value.lic_file_path
-  fortiflex_sn         = each.value.fortiflex_sn
+  fortiflex_token      = each.value.fortiflex_token
   keypair_name         = each.value.keypair_name
   fgt_admin_https_port = each.value.fgt_admin_https_port
   fgt_admin_ssh_port   = each.value.fgt_admin_ssh_port

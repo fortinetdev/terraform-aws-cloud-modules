@@ -1,5 +1,15 @@
 ## Unreleased
 
+## 1.1.1 (Apr 28, 2025)
+
+IMPROVEMENTS:
+* Support UMS features by adding FortiManager infomation on the boot config of FortiGate instance;
+* Support primary instance scale-in protection; 
+* Improve lambda function to check and clean up the terminated instances that did not trigger the terminate event;
+* Adjust user config position on Lambda function to avoid reboot;
+* Add variable fgt_config_shared to support shared FortiGate configuration for all ASGs on variable asgs on each example;
+* Update document;
+
 ## 1.1.0 (Nov 25, 2024)
 
 IMPROVEMENTS:
