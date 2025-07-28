@@ -177,10 +177,12 @@ class FgtConf:
         return fgt_return_status
 
  # using http
-    def connect_to_fgt_http(self, check_get=False, max_loop=10):
+    def connect_to_fgt_http(self, check_get=False, max_loop=10, fgt_password=""):
         self.logger.info("Check connection to FortiGate instance.")
+        if not fgt_password:
+            fgt_password = self.fgt_password
         login_succ = False
-        encoded_fgt_password = urllib.parse.quote(self.fgt_password)
+        encoded_fgt_password = urllib.parse.quote(fgt_password)
         for i in range(max_loop):
             if i > 0:
                 self.logger.info(f"Sleep {i} 30 sec.")
@@ -227,33 +229,62 @@ class FgtConf:
         session_key = ""
         max_loop = 10
         for i in range(max_loop):
-            url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
-            header = {
-                "Content-Type": "application/json"
-            }
-            body = {
-                "username" : "admin",
-                "secretkey" : f"{fgt_vm_id}",
-                "ack_pre_disclaimer" : True,
-                "ack_post_disclaimer" : True,
-                "new_password1" : f"{self.fgt_password}",
-                "new_password2" : f"{self.fgt_password}",
-                "request_key": True
-            }
+            api = ""
+            if i % 2:
+                api = "authentication"
+                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
+                header = {
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "username" : "admin",
+                    "secretkey" : f"{fgt_vm_id}",
+                    "ack_pre_disclaimer" : True,
+                    "ack_post_disclaimer" : True,
+                    "new_password1" : f"{self.fgt_password}",
+                    "new_password2" : f"{self.fgt_password}",
+                    "request_key": True
+                }
+                params = None
+            else:
+                api = "loginpwd_change"
+                b_succ_login = self.connect_to_fgt_http(fgt_password=fgt_vm_id, max_loop=1)
+                if not b_succ_login or not self.cookie.get("csrftoken"):
+                    continue
+                session_key = self.cookie["csrftoken"]
+                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/loginpwd_change"
+                header = {
+                    "Content-Type": "application/json",
+                    "Cookie": self.cookie["cookie"],
+                    "X-CSRFTOKEN": self.cookie["csrftoken"]
+                }
+                params = {
+                    "CSRF_TOKEN" : self.cookie["csrftoken"],
+                    "old_pwd" : fgt_vm_id,
+                    "pwd1" : self.fgt_password,
+                    "pwd2" : self.fgt_password,
+                    "confirm": 1
+                }
+                body = None
             try:
-                response = requests.post(url, headers=header, json=body, verify=False, timeout=20)
+                response = requests.post(url, headers=header, params=params, json=body, verify=False, timeout=20)
                 if response.status_code == 200:
-                    response_json = response.json()
-                    status_code = 0
-                    if response_json:
-                        status_code = response_json['status_code']
-                        if status_code == 5:
-                            b_succ = True
-                            session_key = response_json['session_key']
+                    if api == "authentication":
+                        response_json = response.json()
+                        status_code = 0
+                        if response_json:
+                            status_code = response_json['status_code']
+                            if status_code == 5:
+                                b_succ = True
+                                session_key = response_json['session_key']
+                            else:
+                                self.logger.info(f"Status code is not 5, but {status_code}")
                         else:
-                            self.logger.info(f"Status code is not 5, but {status_code}")
+                            self.logger.info("Could not get http status_code")
                     else:
-                        self.logger.info("Could not get http status_code")
+                        response_text = response.text
+                        if "document.location" in response_text:
+                            b_succ = True
                 else:
                     self.logger.info("Could not get http return status")
                 response.close()

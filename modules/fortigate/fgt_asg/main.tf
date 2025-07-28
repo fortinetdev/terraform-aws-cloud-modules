@@ -29,7 +29,8 @@ locals {
     network_interfaces    = var.network_interfaces
     fgt_login_port_number = var.fgt_login_port_number
     fmg_integration       = var.fmg_integration
-    fgt_primary_port      = "port${[for e in var.network_interfaces : e.device_index if lookup(e, "mgmt_intf", false)][0]}"
+    license_type          = var.license_type
+    fgt_primary_port      = "port${[for e in var.network_interfaces : e.device_index + 1 if lookup(e, "mgmt_intf", false)][0]}"
   }
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
 }
@@ -53,6 +54,17 @@ resource "aws_launch_template" "fgt" {
       security_groups             = lookup(network_interfaces.value, "security_groups", null)
       subnet_id                   = values(network_interfaces.value["subnet_id_map"])[0]
       associate_public_ip_address = lookup(network_interfaces.value, "enable_public_ip", null)
+    }
+  }
+  dynamic "metadata_options" {
+    for_each = var.metadata_options == null ? {} : { "metadata_options" : var.metadata_options }
+
+    content {
+      http_endpoint               = metadata_options.value.http_endpoint
+      http_tokens                 = metadata_options.value.http_tokens
+      http_put_response_hop_limit = metadata_options.value.http_put_response_hop_limit
+      http_protocol_ipv6          = metadata_options.value.http_protocol_ipv6
+      instance_metadata_tags      = metadata_options.value.instance_metadata_tags
     }
   }
 
@@ -254,7 +266,7 @@ locals {
 resource "aws_dynamodb_table" "track_table" {
   count = var.create_dynamodb_table == true ? 1 : 0
 
-  name         = var.dynamodb_table_name != "" ? "${var.module_prefix}fgt_asg_track_table" : "${var.module_prefix}${var.dynamodb_table_name}"
+  name         = var.dynamodb_table_name == "" ? "${var.module_prefix}fgt_asg_track_table" : "${var.module_prefix}${var.dynamodb_table_name}"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "Category"
 
@@ -266,6 +278,20 @@ resource "aws_dynamodb_table" "track_table" {
     lookup(var.tags, "general", {}),
     lookup(var.tags, "dynamodb", {})
   )
+}
+
+resource "aws_dynamodb_table_item" "user_config" {
+  count      = var.create_dynamodb_table == true && var.user_conf != "" ? 1 : 0
+  table_name = local.dynamodb_table_name
+  hash_key   = "Category"
+
+  item = <<ITEM
+{
+  "Category": {"S": "user_config"},
+  "content": {"S": "${base64encode(var.user_conf)}"}
+}
+ITEM
+  depends_on = [ aws_dynamodb_table.track_table ]
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
@@ -344,7 +370,7 @@ resource "aws_lambda_layer_version" "lambda_layer_requests" {
   filename   = "${path.module}/requests_layer.zip"
   layer_name = "lambda_layer_requests"
 
-  compatible_runtimes = ["python3.8"]
+  compatible_runtimes = ["python3.12"]
 }
 
 resource "aws_lambda_function" "fgt_asg_lambda" {
@@ -353,11 +379,16 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
   role             = aws_iam_role.iam_for_lambda.arn
   handler          = "fgt-asg-lambda.lambda_handler"
   source_code_hash = data.archive_file.lambda_public.output_base64sha256
-  runtime          = "python3.8"
+  runtime          = "python3.12"
   timeout          = var.lambda_timeout
   layers = [
     aws_lambda_layer_version.lambda_layer_requests.arn
   ]
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.fgt_asg_lambda.name
+  }
 
   environment {
     variables = {
@@ -370,7 +401,6 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       gwlb_ips                       = jsonencode(var.gwlb_ips)
       fgt_multi_vdom                 = var.fgt_multi_vdom
       create_geneve_for_all_az       = var.create_geneve_for_all_az
-      user_conf                      = var.user_conf
       user_conf_s3                   = jsonencode(var.user_conf_s3)
       enable_privatelink_dydb        = local.enable_privatelink_dydb
       dynamodb_table_name            = local.enable_privatelink_dydb ? null : local.dynamodb_table_name
@@ -391,6 +421,9 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
     lookup(var.tags, "general", {}),
     lookup(var.tags, "lambda", {})
   )
+  depends_on = [
+    aws_cloudwatch_log_group.fgt_asg_lambda,
+  ]
 }
 
 resource "aws_lambda_function" "fgt_asg_lambda_internal" {
@@ -399,11 +432,16 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
   role             = aws_iam_role.iam_for_lambda.arn
   handler          = "fgt-asg-lambda-internal.lambda_handler"
   source_code_hash = data.archive_file.lambda_private.output_base64sha256
-  runtime          = "python3.8"
+  runtime          = "python3.12"
   timeout          = var.lambda_timeout
   layers = [
     aws_lambda_layer_version.lambda_layer_requests.arn
   ]
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.fgt_asg_lambda_internal.name
+  }
 
   vpc_config {
     subnet_ids = distinct(concat(
@@ -429,6 +467,17 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
     lookup(var.tags, "general", {}),
     lookup(var.tags, "lambda", {})
   )
+  depends_on = [
+    aws_cloudwatch_log_group.fgt_asg_lambda_internal,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "fgt_asg_lambda" {
+  name = "/aws/lambda/${local.asg_name}_fgt-asg-lambda"
+}
+
+resource "aws_cloudwatch_log_group" "fgt_asg_lambda_internal" {
+  name = "/aws/lambda/${local.asg_name}_fgt-asg-lambda-internal"
 }
 
 resource "aws_lambda_permission" "lambda_permission" {

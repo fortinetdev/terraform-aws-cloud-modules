@@ -5,6 +5,7 @@ import time
 import requests
 import re
 import uuid
+import base64
 
 import boto3
 import botocore
@@ -1748,7 +1749,7 @@ class FgtConf:
 # FortiGate configuration
     def gen_config_content(self, fgt_vm_id):
         gwlb_ips = json.loads(os.getenv('gwlb_ips'))
-        user_conf = os.getenv('user_conf')
+        user_conf = self.get_user_config_from_dydb()
         user_conf_s3 = json.loads(os.getenv('user_conf_s3'))
         fgt_multi_vdom = os.getenv('fgt_multi_vdom') == 'true'
         create_geneve_for_all_az = os.getenv('create_geneve_for_all_az') == 'true'
@@ -1893,6 +1894,19 @@ class FgtConf:
         }
         b_succ, response = self.invoke_lambda(payload, "fgt")
         return b_succ
+
+    def get_user_config_from_dydb(self):
+        self.logger.info("Get user configuration from DynamoDB.")
+        rst = ""
+        try:
+            response = self.get_item_from_dydb("user_config", ["content"])
+            if response:
+                rst = response.get('content')
+                if rst:
+                    rst = base64.b64decode(rst).decode('utf-8') 
+        except Exception as err:
+            self.logger.error(f"Could not get instance list of ASG: {err}")
+        return rst
 
 def clean_terminated_vms(logger, intf_object, fgtconf_object):
     logger.info("Clean up terminated vms.")

@@ -1,9 +1,20 @@
 ## Unreleased
 
+## 1.1.2 (July 28, 2025)
+
+IMPROVEMENTS:
+* Support FortiManager integration as native mode;
+* Fix issue of port number mismatch on fgt-userdata.tftpl;
+* Move user_conf to DynamoDB table to avoid Lambda function environment variable exceed 4kb limitation;
+* Explicitly create Cloudwatch log group by Terraform, so that Terraform will destroy the log groups when destroying the project;
+* Fix issue of ConditionalCheckFailedException caused by creating DynamoDB item;
+* Support metadata options for instance template;
+* Upgrade lambda function environment from Python 3.8 to Python 3.12;
+
 ## 1.1.1 (Apr 28, 2025)
 
 IMPROVEMENTS:
-* Support UMS features by adding FortiManager infomation on the boot config of FortiGate instance;
+* Support UMS features by adding FortiManager information on the boot config of FortiGate instance;
 * Support primary instance scale-in protection; 
 * Improve lambda function to check and clean up the terminated instances that did not trigger the terminate event;
 * Adjust user config position on Lambda function to avoid reboot;

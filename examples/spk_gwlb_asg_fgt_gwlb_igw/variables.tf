@@ -444,10 +444,21 @@ variable "asgs" {
       Options:
         - ip : (Required|string) FortiManager public IP.
         - sn : (Required|string) FortiManager serial number.
-        - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
-        - fmg_password : (Required|string) FortiManager password.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
-        - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
+        - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - ums: (Optional|map) Configurations for UMS mode.
+          Options for ums:
+          - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
+          - fmg_password : (Required|string) FortiManager password.
+          - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
+          - api_key : (Optional|string) FortiManager API key that used and required when license_type is 'byol'.
+    - metadata_options: (Optional|map) The metadata options for the instances.
+      Options:
+      - http_endpoint               : (Optional|string) Whether the metadata service is available. Can be "enabled" or "disabled". (Default: "enabled").
+      - http_tokens                 : (Optional|string) Whether or not the metadata service requires session tokens, also referred to as Instance Metadata Service Version 2 (IMDSv2). Can be "optional" or "required". (Default: "optional").
+      - http_put_response_hop_limit : (Optional|number) The desired HTTP PUT response hop limit for instance metadata requests. The larger the number, the further instance metadata requests can travel. Can be an integer from 1 to 64. (Default: 1).
+      - http_protocol_ipv6          : (Optional|string) Enables or disables the IPv6 endpoint for the instance metadata service. Can be "enabled" or "disabled".
+      - instance_metadata_tags      : (Optional|string) Enables or disables access to instance tags from the instance metadata service. Can be "enabled" or "disabled".
     Auto Scale Group
     - asg_max_size : (Required|number) Maximum size of the Auto Scaling Group.
     - asg_min_size : (Required|number) Minimum size of the Auto Scaling Group.
@@ -585,11 +596,22 @@ variable "fgt_config_shared" {
       Options:
         - ip : (Required|string) FortiManager public IP.
         - sn : (Required|string) FortiManager serial number.
-        - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
-        - fmg_password : (Required|string) FortiManager password.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
-        - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
-    
+        - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - ums: (Optional|map) Configurations for UMS mode.
+          Options for ums:
+          - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
+          - fmg_password : (Required|string) FortiManager password.
+          - hb_interval : (Optional|number) Time between sending heartbeat packets. Increase to reduce false positives. Default: 10.
+          - api_key : (Optional|string) FortiManager API key that used and required when license_type is 'byol'.
+    - metadata_options: (Optional|map) The metadata options for the instances.
+      Options:
+      - http_endpoint               : (Optional|string) Whether the metadata service is available. Can be "enabled" or "disabled". (Default: "enabled").
+      - http_tokens                 : (Optional|string) Whether or not the metadata service requires session tokens, also referred to as Instance Metadata Service Version 2 (IMDSv2). Can be "optional" or "required". (Default: "optional").
+      - http_put_response_hop_limit : (Optional|number) The desired HTTP PUT response hop limit for instance metadata requests. The larger the number, the further instance metadata requests can travel. Can be an integer from 1 to 64. (Default: 1).
+      - http_protocol_ipv6          : (Optional|string) Enables or disables the IPv6 endpoint for the instance metadata service. Can be "enabled" or "disabled".
+      - instance_metadata_tags      : (Optional|string) Enables or disables access to instance tags from the instance metadata service. Can be "enabled" or "disabled".
+
   Example:
   ```
   fgt_config_shared = {
@@ -649,12 +671,23 @@ variable "fgt_config_shared" {
       })))
     })), {})
     fmg_integration = optional(object({
-      ip                  = optional(string)
-      sn                  = optional(string)
-      autoscale_psksecret = optional(string)
-      fmg_password        = optional(string)
-      fgt_lic_mgmt        = optional(string)
-      hb_interval         = optional(number)
+      ip           = string
+      sn           = string
+      fgt_lic_mgmt = optional(string, "fmg")
+      vrf_select   = optional(number)
+      ums = optional(object({
+        autoscale_psksecret = optional(string, "")
+        fmg_password        = optional(string, "")
+        hb_interval         = optional(number, 10)
+        api_key             = optional(string, "")
+      }))
+      metadata_options = optional(object({
+        http_endpoint               = optional(string, "enabled")
+        http_tokens                 = optional(string, "optional")
+        http_put_response_hop_limit = optional(number, 1)
+        http_protocol_ipv6          = optional(string, null)
+        instance_metadata_tags      = optional(string, null)
+      }), null)
     }), null)
   })
   default = {}

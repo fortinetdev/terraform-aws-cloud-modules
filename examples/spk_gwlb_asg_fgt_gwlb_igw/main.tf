@@ -215,8 +215,9 @@ module "fgt_asg" {
       lookup(each.value, "user_conf_content", "") != "" ? each.value.user_conf_content : lookup(var.fgt_config_shared, "user_conf_content", "")
     )
   )
-  user_conf_s3    = lookup(each.value, "user_conf_s3", null) != null ? each.value.user_conf_s3 : lookup(var.fgt_config_shared, "user_conf_s3", null) != null ? var.fgt_config_shared.user_conf_s3 : {}
-  fmg_integration = lookup(each.value, "fmg_integration", null) != null ? each.value.fmg_integration : lookup(var.fgt_config_shared, "fmg_integration", null)
+  user_conf_s3     = lookup(each.value, "user_conf_s3", null) != null ? each.value.user_conf_s3 : lookup(var.fgt_config_shared, "user_conf_s3", null) != null ? var.fgt_config_shared.user_conf_s3 : {}
+  fmg_integration  = jsondecode(lookup(each.value, "fmg_integration", null) != null ? jsonencode(each.value.fmg_integration) : jsonencode(lookup(var.fgt_config_shared, "fmg_integration", null)))
+  metadata_options = lookup(each.value, "metadata_options", null) != null ? each.value.metadata_options : lookup(var.fgt_config_shared, "metadata_options", null)
 
   # Auto Scale Group
   availability_zones         = var.availability_zones
