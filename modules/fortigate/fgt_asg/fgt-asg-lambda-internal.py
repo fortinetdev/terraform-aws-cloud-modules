@@ -295,8 +295,8 @@ class FgtConf:
             b_succ = self.connect_to_fgt_http(max_loop=1)
             if b_succ:
                 break
-            self.logger.info(f"Sleep {i} 30 sec.")
-            time.sleep(30)
+            self.logger.info(f"Sleep {i} 10 sec.")
+            time.sleep(10)
         if b_succ:
             # Logout
             url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"

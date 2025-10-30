@@ -18,18 +18,12 @@ variable "existing_rt" {
     }
     ```
     EOF
-  type        = any
-  default     = null
-  validation {
-    condition = var.existing_rt == null ? true : alltrue([
-      for k, v in var.existing_rt : contains([
-        "id",
-        "name",
-        "tags"
-      ], k)
-    ])
-    error_message = "One or more argument(s) can not be identified, available options: id, name, tags."
-  }
+  type = object({
+    id   = optional(string, "")
+    name = optional(string, "")
+    tags = optional(map(any), {})
+  })
+  default = null
 }
 
 variable "vpc_id" {

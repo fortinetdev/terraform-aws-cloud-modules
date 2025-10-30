@@ -10,6 +10,7 @@ import base64
 import boto3
 import botocore
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 class Helper:
     def set_to_list(input_content):
@@ -438,7 +439,12 @@ class FgtConf:
         self.logger = logger
         self.ec2_client = boto3.client("ec2")
         self.s3_client = boto3.client("s3")
-        self.lambda_client = boto3.client("lambda")
+        self.lambda_client = boto3.client(
+            "lambda",
+            config=Config(
+                read_timeout=100     # seconds to wait for response
+            )
+        )
 
         self.logger.info(f"Do FGT config.")
         self.fgt_vm_id = fgt_vm_id
@@ -447,7 +453,8 @@ class FgtConf:
         self.s3_bucket_name = os.getenv("lic_s3_name")
         self.need_license = os.getenv("need_license") == "true"
         self.enable_privatelink_dydb = os.getenv("enable_privatelink_dydb") == "true"
-        self.fgt_lic_mgmt = os.getenv("fgt_lic_mgmt")
+        self.fmg_integration = json.loads(os.getenv("fmg_integration"))
+        self.fgt_lic_mgmt = self.fmg_integration.get("fgt_lic_mgmt", "") if self.fmg_integration else ""
         if not self.enable_privatelink_dydb:
             self.dynamodb_client = boto3.client("dynamodb")
             self.dynamodb_table_name = os.getenv("dynamodb_table_name")
@@ -472,7 +479,7 @@ class FgtConf:
             return
     
     def do_launch(self):
-        self.logger.info("Do launch envent.")
+        self.logger.info("Do launch event.")
         instance_detail = self.ec2_client.describe_instances(InstanceIds=[self.fgt_vm_id])
         # Add name for the instance
         self.update_tags(
@@ -516,7 +523,7 @@ class FgtConf:
 
         
     def do_terminate(self):
-        self.logger.info("Do terminate envent.")
+        self.logger.info("Do terminate event.")
         # Upload license
         if self.need_license and self.fgt_lic_mgmt != "fmg":
             # Update Serial numbers
@@ -537,15 +544,14 @@ class FgtConf:
         self.remove_asg_instance_dydb(self.fgt_vm_id)
         if self.enable_fgt_system_autoscale:
             instance_detail = self.ec2_client.describe_instances(InstanceIds=[self.fgt_vm_id])
-            self.update_tags(
-                [self.fgt_vm_id], 
-                [{
-                    'Key': 'Autoscale Role',
-                    'Value': ''
-                }]
-            )
-            self.image_id = instance_detail['Reservations'][0]['Instances'][0]['ImageId']
-            self.fgt_primary_ip, self.fgt_primary_port = self.get_primary_ip(instance_detail['Reservations'][0]['Instances'][0])
+            if instance_detail['Reservations'] and instance_detail['Reservations'][0]['Instances']:
+                self.update_tags(
+                    [self.fgt_vm_id], 
+                    [{
+                        'Key': 'Autoscale Role',
+                        'Value': ''
+                    }]
+                )
             self.check_primary(self.fgt_vm_id)
 
 # Instance information
@@ -565,22 +571,26 @@ class FgtConf:
 
     def get_primary_ip(self, instance):
         self.logger.info(f"Get primary ip for current instance.")
-        p_ip = ""
-        p_port = ""
+        hi_p_ip = ""
+        hi_p_port = ""
+        hi_index = -1
         interfaces = instance.get("NetworkInterfaces")
         if not interfaces:
             self.logger.error(f"Could not get network instances.")
-            return p_ip, p_port
+            return hi_p_ip, hi_p_port
         for interface in interfaces:
             if "Association" not in interface:
                 continue
             p_ip = interface.get("PrivateIpAddress")
             d_index = interface.get("Attachment").get("DeviceIndex")
             p_port = f"port{d_index + 1}"
-        if not p_ip:
-            p_ip = instance.get('PrivateIpAddress')
-            p_port = f"port1"
-        return p_ip, p_port
+            if d_index > hi_index:
+                hi_p_ip = p_ip
+                hi_p_port = p_port
+        if not hi_p_ip:
+            hi_p_ip = instance.get('PrivateIpAddress')
+            hi_p_port = f"port1"
+        return hi_p_ip, hi_p_port
 
 # Invoke lambda function
     def invoke_lambda(self, payload, target_lambda, invocation_type=""):
@@ -1681,7 +1691,30 @@ class FgtConf:
                     self.logger.info(f"Can not find private IP for instance: {fgt_vm_id}")
                     continue
                 # Update FortiGate instance configuration
-                temp_str = f"""
+                temp_str = ""
+                if self.fmg_integration:
+                    if self.fmg_integration.get("primary_only", False):
+                        temp_str += """
+                        config system vdom-exception
+                            edit 0
+                                set object system.central-management
+                            next
+                        end
+                        """
+                    fmg_ip = self.fmg_integration.get("ip", "")
+                    fmg_sn = self.fmg_integration.get("sn", "")
+                    fmg_vrf_select = self.fmg_integration.get("vrf_select", "")
+                    if fmg_ip and fmg_sn:
+                        temp_str += f"""
+                        config system central-management
+                            set type fortimanager
+                            set fmg {fmg_ip}
+                            set serial-number {fmg_sn}
+                        """
+                        if fmg_vrf_select:
+                            temp_str += f"set vrf-select {fmg_vrf_select}\n"
+                        temp_str += "end\n"
+                temp_str += f"""
                 config system auto-scale
                     set status enable
                     set sync-interface "{self.fgt_primary_port}"
@@ -1813,7 +1846,30 @@ class FgtConf:
                     self.set_primary_scalein_protection(fgt_vm_id)
             autoscale_role = "Primary"
             if primary_instance_id == fgt_vm_id:
-                temp_str = f"""
+                temp_str = ""
+                if self.fmg_integration:
+                    if self.fmg_integration.get("primary_only", False):
+                        temp_str += """
+                        config system vdom-exception
+                            edit 0
+                                set object system.central-management
+                            next
+                        end
+                        """
+                    fmg_ip = self.fmg_integration.get("ip", "")
+                    fmg_sn = self.fmg_integration.get("sn", "")
+                    fmg_vrf_select = self.fmg_integration.get("vrf_select", "")
+                    if fmg_ip and fmg_sn:
+                        temp_str += f"""
+                        config system central-management
+                            set type fortimanager
+                            set fmg {fmg_ip}
+                            set serial-number {fmg_sn}
+                        """
+                        if fmg_vrf_select:
+                            temp_str += f"set vrf-select {fmg_vrf_select}\n"
+                        temp_str += "end\n"
+                temp_str += f"""
                 config system auto-scale
                     set status enable
                     set sync-interface "{self.fgt_primary_port}"
@@ -1823,7 +1879,22 @@ class FgtConf:
                 """
             else:
                 autoscale_role = "Secondary"
-                temp_str = f"""
+                temp_str = ""
+                if self.fmg_integration and not self.fmg_integration.get("primary_only", False):
+                    fmg_ip = self.fmg_integration.get("ip", "")
+                    fmg_sn = self.fmg_integration.get("sn", "")
+                    fmg_vrf_select = self.fmg_integration.get("vrf_select", "")
+                    if fmg_ip and fmg_sn:
+                        temp_str += f"""
+                        config system central-management
+                            set type fortimanager
+                            set fmg {fmg_ip}
+                            set serial-number {fmg_sn}
+                        """
+                        if fmg_vrf_select:
+                            temp_str += f"set vrf-select {fmg_vrf_select}\n"
+                        temp_str += "end\n"
+                temp_str += f"""
                 config system auto-scale
                     set status enable
                     set sync-interface "{self.fgt_primary_port}"

@@ -446,6 +446,7 @@ variable "asgs" {
         - sn : (Required|string) FortiManager serial number.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
         - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - primary_only : (Optional|bool) Whether the FortiManager integration only apply to primary FortiGate instance. Default is false. 
         - ums: (Optional|map) Configurations for UMS mode.
           Options for ums:
           - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
@@ -598,6 +599,7 @@ variable "fgt_config_shared" {
         - sn : (Required|string) FortiManager serial number.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
         - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - primary_only : (Optional|bool) Whether the FortiManager integration only apply to primary FortiGate instance. Default is false. 
         - ums: (Optional|map) Configurations for UMS mode.
           Options for ums:
           - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
@@ -675,6 +677,7 @@ variable "fgt_config_shared" {
       sn           = string
       fgt_lic_mgmt = optional(string, "fmg")
       vrf_select   = optional(number)
+      primary_only = optional(bool, false)
       ums = optional(object({
         autoscale_psksecret = optional(string, "")
         fmg_password        = optional(string, "")

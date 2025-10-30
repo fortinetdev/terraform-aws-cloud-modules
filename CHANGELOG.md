@@ -1,5 +1,15 @@
 ## Unreleased
 
+## 1.1.3 (Oct 30, 2025)
+
+IMPROVEMENTS:
+* Fix issue of index errors for do_terminate function when the instance been terminated without send terminate event to lambda function;
+* Update select interface logic for FortiGate auto-scaling sync port;
+* Implement FMG integration only with primary FGT instance;
+* Fix index out of range issue of lambda function;
+* Support existing route table on spk_vpc;
+* Fix lambda invoke function timeout issue;
+
 ## 1.1.2 (July 28, 2025)
 
 IMPROVEMENTS:

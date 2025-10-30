@@ -565,6 +565,7 @@ variable "asgs" {
         - sn : (Required|string) FortiManager serial number.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
         - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - primary_only : (Optional|bool) Whether the FortiManager integration only apply to primary FortiGate instance. Default is false. 
         - ums: (Optional|map) Configurations for UMS mode.
           Options for ums:
           - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
@@ -717,6 +718,7 @@ variable "fgt_config_shared" {
         - sn : (Required|string) FortiManager serial number.
         - fgt_lic_mgmt : (Optional|string) FortiGate license management type. Options: 'fmg', 'module'. 'fmg': License handled by the FortiManager, which the module will not perform license related operations. Default: fmg.
         - vrf_select : (Optional|number) VRF ID used for connection to server. 
+        - primary_only : (Optional|bool) Whether the FortiManager integration only apply to primary FortiGate instance. Default is false. 
         - ums: (Optional|map) Configurations for UMS mode.
           Options for ums:
           - autoscale_psksecret : (Required|string) Password that will used on the auto-scale sync-up.
@@ -794,6 +796,7 @@ variable "fgt_config_shared" {
       sn           = string
       fgt_lic_mgmt = optional(string, "fmg")
       vrf_select   = optional(number)
+      primary_only = optional(bool, false)
       ums = optional(object({
         autoscale_psksecret = optional(string, "")
         fmg_password        = optional(string, "")
@@ -1010,9 +1013,14 @@ variable "spk_vpc" {
         }
     ```
     Spoke VPC options:
-        - vpc_id     : (Optional|string) Spoke VPC ID.
+        - vpc_id     : (Required|string) Spoke VPC ID.
         - subnet_ids : (Optional|list) Subnet ID list. Note: Subnets that TGW will attach to should not already have a route table association.
         - route_table_name : (Optional|string) Route table name for the traffic to Transit Gateway Attachment. Default is "spkvpc-to-tgwa-<Spoke VPC name>".
+        - existing_rt : (Optional|map) Using existing route table.
+          Options for variable existing_rt:
+          - id         :  ID of the specific route table.
+          - name       :  Name of the specific Vroute tablePC to retrieve.
+          - tags       :  Map of tags, each pair of which must exactly match a pair on the desired route table.
     Example:
     ```
     spk_vpc = {
@@ -1026,20 +1034,17 @@ variable "spk_vpc" {
     }
     ```
   EOF
-  type        = any
-  default     = {}
-  validation {
-    condition = var.spk_vpc == null ? true : alltrue([
-      for k, v in var.spk_vpc : alltrue([
-        for sk, sv in v : contains([
-          "vpc_id",
-          "subnet_ids",
-          "route_table_name"
-        ], sk)
-      ])
-    ])
-    error_message = "One or more argument(s) can not be identified, available options: vpc_id, subnet_ids, route_table_name."
-  }
+  type = map(object({
+    vpc_id           = string
+    subnet_ids       = optional(list(string), null)
+    route_table_name = optional(string)
+    existing_rt = optional(object({
+      id   = optional(string, "")
+      name = optional(string, "")
+      tags = optional(map(any), {})
+    }), null)
+  }))
+  default = {}
 }
 
 variable "enable_east_west_inspection" {

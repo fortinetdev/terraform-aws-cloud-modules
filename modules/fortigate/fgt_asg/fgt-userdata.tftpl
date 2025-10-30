@@ -1,4 +1,5 @@
 %{ if fmg_integration != null ~}
+%{ if fmg_integration.fgt_lic_mgmt == "fmg" ~}
 config system central-management
     set type fortimanager
     set fmg "${fmg_integration.ip}"
@@ -20,6 +21,7 @@ end
 exec central-mgmt register-device ${fmg_integration.sn} ${fmg_integration.ums.fmg_password}
 %{ else ~}
 exec central-mgmt register-device-by-ip ${fmg_integration.ip} ${fmg_integration.ums.api_key}
+%{ endif ~}
 %{ endif ~}
 %{ endif ~}
 %{ endif ~}

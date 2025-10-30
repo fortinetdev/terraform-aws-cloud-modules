@@ -614,7 +614,12 @@ module "spkvpc-rt" {
 
   for_each = module.transit-gw.tgw == null ? {} : var.spk_vpc
   vpc_id   = each.value["vpc_id"]
-  rt_name  = lookup(each.value, "route_table_name", "spkvpc-to-tgwa-${each.key}")
+  rt_name = (
+    lookup(each.value, "route_table_name", "") != "" ?
+    each.value.route_table_name : lookup(each.value, "existing_rt", null) != null && lookup(each.value.existing_rt, "name", "") != "" ?
+    each.value.existing_rt.name : "spkvpc-to-tgwa-${each.key}"
+  )
+  existing_rt = lookup(each.value, "existing_rt", null)
   routes = {
     to_tgw = {
       destination_cidr_block = "0.0.0.0/0"

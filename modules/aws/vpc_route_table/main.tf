@@ -1,17 +1,18 @@
 locals {
-  rt_id = var.existing_rt == null ? aws_route_table.rt[0].id : contains(keys(var.existing_rt), "id") ? var.existing_rt.id : data.aws_route_table.rt[0].id
+  rt_id = var.existing_rt == null ? aws_route_table.rt[0].id : lookup(var.existing_rt, "id", "") != "" ? var.existing_rt.id : data.aws_route_table.rt[0].id
 }
 ## VPC route table
 data "aws_route_table" "rt" {
-  count = var.existing_rt == null ? 0 : contains(keys(var.existing_rt), "id") ? 0 : 1
+  count = var.existing_rt == null ? 0 : lookup(var.existing_rt, "id", "") != "" ? 0 : 1
 
   tags = merge(
-    contains(keys(var.existing_rt), "name") ? {
+    lookup(var.existing_rt, "name", "") != "" ? {
       Name = var.existing_rt.name
     } : {},
     lookup(var.existing_rt, "tags", {})
   )
 }
+
 resource "aws_route_table" "rt" {
   count = var.existing_rt == null ? 1 : 0
 

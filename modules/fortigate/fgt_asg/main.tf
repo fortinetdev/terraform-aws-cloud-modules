@@ -285,13 +285,13 @@ resource "aws_dynamodb_table_item" "user_config" {
   table_name = local.dynamodb_table_name
   hash_key   = "Category"
 
-  item = <<ITEM
+  item       = <<ITEM
 {
   "Category": {"S": "user_config"},
   "content": {"S": "${base64encode(var.user_conf)}"}
 }
 ITEM
-  depends_on = [ aws_dynamodb_table.track_table ]
+  depends_on = [aws_dynamodb_table.track_table]
 }
 
 resource "aws_vpc_endpoint" "dynamodb" {
@@ -397,7 +397,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       network_interfaces             = jsonencode(var.network_interfaces)
       lic_s3_name                    = local.lic_s3_name
       need_license                   = var.license_type == "byol" ? true : false
-      fgt_lic_mgmt                   = var.fmg_integration == null ? "" : var.fmg_integration.fgt_lic_mgmt
+      fmg_integration                = jsonencode(var.fmg_integration)
       gwlb_ips                       = jsonencode(var.gwlb_ips)
       fgt_multi_vdom                 = var.fgt_multi_vdom
       create_geneve_for_all_az       = var.create_geneve_for_all_az
