@@ -55,6 +55,7 @@ resource "aws_lb_target_group" "gwlb_tgp" {
     enabled             = lookup(var.health_check, "enabled", null)
     healthy_threshold   = lookup(var.health_check, "healthy_threshold", null)
     interval            = lookup(var.health_check, "interval", null)
+    matcher             = lookup(var.health_check, "matcher", null)
     path                = lookup(var.health_check, "path", null)
     port                = lookup(var.health_check, "port", null)
     protocol            = lookup(var.health_check, "protocol", null)

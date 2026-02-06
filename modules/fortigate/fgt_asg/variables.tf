@@ -1,4 +1,10 @@
 ## FortiGate instance template
+variable "vpc_id" {
+  description = "The VPC ID for this ASG."
+  type        = string
+  default     = ""
+}
+
 variable "ami_id" {
   description = "The AMI ID of FortiOS image. If you leave this blank, Terraform will get the AMI ID from AWS market place with the given FortiOS version."
   type        = string
@@ -262,6 +268,18 @@ variable "asg_health_check_grace_period" {
   description = "Time (in seconds) after instance comes into service before checking health."
   type        = number
   default     = 300
+}
+
+variable "health_check_port" {
+  description = "Load balancer health check port."
+  type        = number
+  default     = 0
+}
+
+variable "health_check_protocol" {
+  description = "Load balancer health check protocol."
+  type        = string
+  default     = ""
 }
 
 variable "asg_health_check_type" {

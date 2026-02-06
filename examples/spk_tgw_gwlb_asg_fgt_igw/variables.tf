@@ -364,6 +364,33 @@ variable "existing_subnets" {
   }
 }
 
+variable "existing_rts" {
+  description = <<-EOF
+    Using existing route tables. 
+    Name format should be option of \"fgt_login\", \"gwlbe\", \"ngw_igw\". Or follow the name prefix of \"fgt_login_\", \"tgw_attachment_\", followed with availability zone name.
+    If the id is specified, will use this route table ID. Otherwise, will search the route table based on the given infomation.
+    Options:
+        - id         :  ID of the specific route table.
+        - name       :  Name of the specific route table to retrieve.
+        - tags       :  Map of tags, each pair of which must exactly match a pair on the desired route table.
+        
+    Example:
+    ```
+    existing_rts = {
+      "gwlbe" = {
+          id = "rtb-0b853650636173dd8"
+      }
+    }
+    ```
+    EOF
+  type = map(object({
+    id   = optional(string, "")
+    name = optional(string, "")
+    tags = optional(map(any), {})
+  }))
+  default = {}
+}
+
 ## Transit Gateway
 variable "existing_tgw" {
   description = <<-EOF
@@ -549,6 +576,7 @@ variable "asgs" {
     - dynamodb_table_name : (Required|string) DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP.
     - privatelink_security_groups : (Optional|string) Security group name list to create interface endpoint.
     - primary_scalein_protection : (Optional|bool) If true, will set scale-in protection for the primary instance. Only works when enable_fgt_system_autoscale set to true. Default is false.
+    - asg_health_check_grace_period : (Optional|number) Time (in seconds) after instance comes into service before checking health.
     - scale_policies : (Optional|map) Auto Scaling group scale policies.
       Key is policy name. Options for values of parameter scale_policies:
         - policy_type               : (Required|string) Policy type, either "SimpleScaling", "StepScaling", "TargetTrackingScaling", or "PredictiveScaling".
@@ -873,6 +901,62 @@ variable "gwlb_ep_service_name" {
   description = "Gateway Load Balancer Endpoint Service name."
   default     = "gwlb_endpoint_service"
   type        = string
+}
+
+variable "gwlb_health_check" {
+  description = <<-EOF
+        Health Check configuration block.
+        Format:
+        ```
+        gwlb_health_check = {
+            \<Option\> = \<Option value\>
+        }
+        ```
+        Options:
+            - enabled              : (Optional|bool) Whether health checks are enabled. Defaults to true.
+            - healthy_threshold    : (Optional|number) Number of consecutive health check successes required before considering a target healthy. The range is 2-10. Defaults to 3.
+            - interval             : (Optional|number) Approximate amount of time, in seconds, between health checks of an individual target. The range is 5-300. For lambda target groups, it needs to be greater than the timeout of the underlying lambda. Defaults to 30.
+            - matcher              : (Optional|string) The HTTP or gRPC codes to use when checking for a successful response from a target. The health_check.protocol must be one of HTTP or HTTPS or the target_type must be lambda. Values can be comma-separated individual values (e.g., "200,202") or a range of values (e.g., "200-299").
+            - path                 : (Optional|string) Destination for the health check request. Required for HTTP/HTTPS ALB and HTTP NLB. Only applies to HTTP/HTTPS.
+            - port                 : (Optional|number) The port the load balancer uses when performing health checks on targets. Default is traffic-port.
+            - protocol             : (Optional|string) Protocol the load balancer uses when performing health checks on targets. Must be either TCP, HTTP, or HTTPS. The TCP protocol is not supported for health checks if the protocol of the target group is HTTP or HTTPS. Defaults to HTTP.
+            - timeout              : (Optional|number) Amount of time, in seconds, during which no response from a target means a failed health check. The range is 2-120 seconds. For target groups with a protocol of GENEVE, the default is 5 seconds.
+            - unhealthy_threshold  : (Optional|number) Number of consecutive health check failures required before considering a target unhealthy. The range is 2-10. Defaults to 3.
+
+        Example:
+        ```
+        gwlb_health_check = {
+            enabled              = true
+            healthy_threshold    = 3
+            interval             = 30
+            port                 = 80
+            protocol             = "TCP"
+            timeout              = 5
+            unhealthy_threshold  = 3
+        }
+        ```
+    EOF
+  default = {
+    port     = 80
+    protocol = "TCP"
+  }
+  type = any
+  validation {
+    condition = length(var.gwlb_health_check) == 0 ? true : alltrue([
+      for k, v in var.gwlb_health_check : contains([
+        "enabled",
+        "healthy_threshold",
+        "interval",
+        "matcher",
+        "path",
+        "port",
+        "protocol",
+        "timeout",
+        "unhealthy_threshold",
+      ], k)
+    ])
+    error_message = "One or more argument(s) can not be identified, available options: enabled, healthy_threshold, interval, matcher, path, port, protocol, timeout, unhealthy_threshold."
+  }
 }
 
 variable "existing_gwlb" {

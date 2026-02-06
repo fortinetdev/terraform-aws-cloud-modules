@@ -183,16 +183,30 @@ class FgtConf:
             fgt_password = self.fgt_password
         login_succ = False
         encoded_fgt_password = urllib.parse.quote(fgt_password)
-        for i in range(max_loop):
-            if i > 0:
+        for i in range(max_loop * 2):
+            if i > 1:
                 self.logger.info(f"Sleep {i} 30 sec.")
                 time.sleep(30)
-            url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/logincheck?username=admin&secretkey={encoded_fgt_password}"
-            header = {
-                "Content-Type": "application/json"
-            }
+            if i % 2:
+                api = "logincheck"
+                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/logincheck?username=admin&secretkey={encoded_fgt_password}"
+                header = {
+                    "Content-Type": "application/json"
+                }
+                body = None
+            else:
+                api = "authentication"
+                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
+                header = {
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "username" : "admin",
+                    "password" : f"{fgt_password}",
+                    "ack_pre_disclaimer" : True
+                }
             try:
-                response = requests.post(url, headers=header, verify=False, timeout=20)
+                response = requests.post(url, headers=header, json=body, verify=False, timeout=20)
                 if response.status_code == 200:
                     self.cookie["cookie"] = ""
                     self.cookie["csrftoken"] = ""
@@ -203,12 +217,20 @@ class FgtConf:
                             cookie_list = [ ele.split(';')[0] for ele in cookie_list]
                             for item in cookie_list:
                                 cur_v = item.strip()
-                                if "ccsrftoken" in cur_v:
-                                    csrftoken = re.search('\"(.*)\"', cur_v)
-                                    if csrftoken and csrftoken.group(1) != "0%260":
-                                        self.cookie["csrftoken"] = csrftoken.group(1)
-                                        self.cookie["cookie"] = ";/n".join(cookie_list)
-                                        login_succ = True
+                                if api == "logincheck":
+                                    if "ccsrftoken" in cur_v:
+                                        csrftoken = re.search('\"(.*)\"', cur_v)
+                                        if csrftoken and csrftoken.group(1) and csrftoken.group(1) != "0%260":
+                                            self.cookie["csrftoken"] = csrftoken.group(1)
+                                            self.cookie["cookie"] = ";/n".join(cookie_list)
+                                            login_succ = True
+                                else:
+                                    if "ccsrf_token" in cur_v:
+                                        csrftoken = re.search('ccsrf_token.*?=(.*)$', cur_v)
+                                        if csrftoken and csrftoken.group(1) and csrftoken.group(1) != "0%260":
+                                            self.cookie["csrftoken"] = csrftoken.group(1)
+                                            self.cookie["cookie"] = ";/n".join(cookie_list)
+                                            login_succ = True
                             if login_succ:
                                 break
                     if login_succ and check_get:
@@ -217,6 +239,7 @@ class FgtConf:
                     self.logger.info("Could not get http return status")
                 # response.close()
                 if login_succ:
+                    self.logger.info("Check connection to FortiGate instance succeeded.")
                     break
             except Exception as err:
                 self.logger.info(f"Could not get http return status, try again. Error: {err}")
@@ -231,22 +254,6 @@ class FgtConf:
         for i in range(max_loop):
             api = ""
             if i % 2:
-                api = "authentication"
-                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
-                header = {
-                    "Content-Type": "application/json"
-                }
-                body = {
-                    "username" : "admin",
-                    "secretkey" : f"{fgt_vm_id}",
-                    "ack_pre_disclaimer" : True,
-                    "ack_post_disclaimer" : True,
-                    "new_password1" : f"{self.fgt_password}",
-                    "new_password2" : f"{self.fgt_password}",
-                    "request_key": True
-                }
-                params = None
-            else:
                 api = "loginpwd_change"
                 b_succ_login = self.connect_to_fgt_http(fgt_password=fgt_vm_id, max_loop=1)
                 if not b_succ_login or not self.cookie.get("csrftoken"):
@@ -266,6 +273,23 @@ class FgtConf:
                     "confirm": 1
                 }
                 body = None
+            else:
+                api = "authentication"
+                url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
+                header = {
+                    "Content-Type": "application/json"
+                }
+                body = {
+                    "username" : "admin",
+                    "secretkey" : f"{fgt_vm_id}",
+                    "password" : f"{fgt_vm_id}",
+                    "ack_pre_disclaimer" : True,
+                    "ack_post_disclaimer" : True,
+                    "new_password1" : f"{self.fgt_password}",
+                    "new_password2" : f"{self.fgt_password}",
+                    "request_key": True
+                }
+                params = None
             try:
                 response = requests.post(url, headers=header, params=params, json=body, verify=False, timeout=20)
                 if response.status_code == 200:
@@ -286,7 +310,7 @@ class FgtConf:
                         if "document.location" in response_text:
                             b_succ = True
                 else:
-                    self.logger.info("Could not get http return status")
+                    self.logger.info("Could not get http return status, try check new password.")
                 response.close()
                 if b_succ:
                     break
@@ -298,6 +322,7 @@ class FgtConf:
             self.logger.info(f"Sleep {i} 10 sec.")
             time.sleep(10)
         if b_succ:
+            self.logger.info(f"Password changed successfully.")
             # Logout
             url = f"https://{self.fgt_private_ip}{self.fgt_login_port}/api/v2/authentication"
             header = {

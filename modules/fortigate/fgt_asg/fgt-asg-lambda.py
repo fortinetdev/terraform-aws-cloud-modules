@@ -175,6 +175,8 @@ class NetworkInterface:
 
     def create_interface(self, intf_name, intf_conf, fgt_az):
         self.logger.info(f"Create interface: {intf_name}")
+        sg_allow_lambda = os.getenv('sg_allow_lambda')
+        mgmt_intf_index = os.getenv("mgmt_intf_index")
         try:
             private_ips = []
             if "private_ips" in intf_conf:
@@ -190,10 +192,13 @@ class NetworkInterface:
             if not subnet_id:
                 self.logger.error(f"Could not get the Subnet ID of AZ: {fgt_az}")
                 return None
+            security_groups = intf_conf.get("security_groups", [])
+            if mgmt_intf_index and mgmt_intf_index == intf_conf.get("device_index", ""):
+                security_groups.append(sg_allow_lambda)
             intf = self.ec2_client.create_network_interface(
                 Description        = intf_conf["description"] if "description" in intf_conf else "",
                 SubnetId           = subnet_id, 
-                Groups             = intf_conf["security_groups"] if "security_groups" in intf_conf else [],
+                Groups             = security_groups,
                 PrivateIpAddresses = private_ips
             )
             intf_id = intf['NetworkInterface']['NetworkInterfaceId']
@@ -456,7 +461,12 @@ class FgtConf:
         self.fmg_integration = json.loads(os.getenv("fmg_integration"))
         self.fgt_lic_mgmt = self.fmg_integration.get("fgt_lic_mgmt", "") if self.fmg_integration else ""
         if not self.enable_privatelink_dydb:
-            self.dynamodb_client = boto3.client("dynamodb")
+            self.dynamodb_client = boto3.client(
+                "dynamodb",
+                config=Config(
+                    read_timeout=10     # seconds to wait for response
+                )
+            )
             self.dynamodb_table_name = os.getenv("dynamodb_table_name")
         self.enable_fgt_system_autoscale = os.getenv("enable_fgt_system_autoscale") == "true"
         self.fgt_system_autoscale_psksecret = os.getenv("fgt_system_autoscale_psksecret")
@@ -465,6 +475,8 @@ class FgtConf:
         self.mgmt_intf_index = os.getenv("mgmt_intf_index")
         self.asg_name = os.getenv("asg_name")
         self.primary_scalein_protection = os.getenv("primary_scalein_protection") == "true"
+        self.health_check_port = os.getenv("health_check_port")
+        self.health_check_protocol = os.getenv("health_check_protocol")
 
     def set_vm_id(self, vm_id):
         self.fgt_vm_id = vm_id
@@ -497,7 +509,7 @@ class FgtConf:
         # Change password
         b_succ = self.change_password(fgt_private_ip, self.fgt_vm_id)
         if not b_succ:
-            self.logger.error(f"Could not change password.")
+            self.logger.error(f"Change password failed.")
             return
         
         # Update in Dynamo DB
@@ -617,6 +629,7 @@ class FgtConf:
                     payload_contant_json = json.loads(payload_contant.decode("utf-8"))
                     if payload_contant_json["ErrorMsg"]:
                         self.logger.error("Invoke lambda function response error msg: {}".format(payload_contant_json["ErrorMsg"]))
+                        b_succ = False
                     else:
                         rst = payload_contant_json["ResponseContent"]
             else:
@@ -631,6 +644,7 @@ class FgtConf:
 # License
     def upload_license(self, fgt_private_ip, fgt_vm_id):
         # Get license, license_type: "token", "file"; license_content：token if license_type is token, file name if license_type is file
+        self.logger.info("Upload license.")
         license_type, license_content, sn_or_file_name = self.get_license(fgt_vm_id)
         if license_type == "":
             self.logger.error(f"Could not get license!")
@@ -863,6 +877,7 @@ class FgtConf:
         return lic_file_content
 
     def release_lic(self, fgt_vm_id):
+        self.logger.info("Release license.")
         b_locked = self.lock_lic_track_file()
         if not b_locked:
             return False
@@ -1079,6 +1094,7 @@ class FgtConf:
   # AWS operations
    # Token related
     def get_fortiflex_oauth_token(self):
+        self.logger.info("Get FortiFlex OAuth token.")
         dydb_items = self.get_item_from_dydb("fortiflex", ["oauth_token"])
         oauth_token = dydb_items.get("oauth_token", "")
         if oauth_token:
@@ -1231,15 +1247,19 @@ class FgtConf:
    # Serial number related
     def update_all_sn_list(self):
         self.logger.info("Update all serial number list")
+        # get SN list given by user
         config_sn_list = json.loads(os.getenv("fortiflex_sn_list"))
         if not config_sn_list:
             config_sn_list = []
+        # get config ID list given by user, and get all available SNs under the config IDs
         configid_list = json.loads(os.getenv("fortiflex_configid_list"))
         if not configid_list:
             configid_list = []
         for configid in configid_list:
             cur_sn_list = self.get_sn_by_configid(configid)
             config_sn_list.extend(cur_sn_list)
+
+        # get used SN list
         used_sn_map = self.get_used_sn_map()
         used_sn_set = set(used_sn_map.values())
         config_sn_list.extend(used_sn_set)
@@ -1254,22 +1274,22 @@ class FgtConf:
         if all_sn_list != dydb_all_sn_list:
             # Update all_sn_list
             self.put_item_to_dydb("fortiflex", "all_sn_list", all_sn_list)
-            # Update available_sn_list
-            new_available_sn_list = all_sn_list - used_sn_set
-            removed_sn_list = dydb_all_sn_list - all_sn_list
-            if new_available_sn_list:
-                self.add_available_sn(new_available_sn_list)
-            if removed_sn_list:
-                self.remove_available_sn(removed_sn_list)
-                for instance_id, sn in used_sn_map.items():
-                    if sn in removed_sn_list:
-                        self.logger.info(f"Change license for instance {instance_id}")
-                        instance_detail = self.ec2_client.describe_instances(InstanceIds=[instance_id])
-                        cur_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0]) 
-                        if not cur_private_ip:
-                            self.logger.info(f"Can not find private IP for instance: {instance_id}")
-                            continue
-                        self.upload_license(cur_private_ip, instance_id)
+        # Update available_sn_list
+        new_available_sn_list = all_sn_list - used_sn_set
+        removed_sn_list = dydb_all_sn_list - all_sn_list
+        if new_available_sn_list:
+            self.add_available_sn(new_available_sn_list)
+        if removed_sn_list:
+            self.remove_available_sn(removed_sn_list)
+            for instance_id, sn in used_sn_map.items():
+                if sn in removed_sn_list:
+                    self.logger.info(f"Change license for instance {instance_id}")
+                    instance_detail = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+                    cur_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0]) 
+                    if not cur_private_ip:
+                        self.logger.info(f"Can not find private IP for instance: {instance_id}")
+                        continue
+                    self.upload_license(cur_private_ip, instance_id)
         return True
 
     def get_sn_by_configid(self, configid):
@@ -1297,10 +1317,12 @@ class FgtConf:
                         self.logger.error(f"Could not get sefial numbers by config id {configid}, error msg: {err_msg}")
                     return []
                 for ele in response_json["entitlements"]:
+                    cur_sn = ele["serialNumber"]
                     if ele["status"] in {"ACTIVE"} and ele["tokenStatus"] == "NOTUSED":
-                        sn_list.append(ele["serialNumber"])
+                        sn_list.append(cur_sn)
+                        self.stop_sn(cur_sn, oauth_token)
                     elif ele["status"] in {"STOPPED", "PENDING"}:
-                        sn_list.append(ele["serialNumber"])
+                        sn_list.append(cur_sn)
             else:
                 self.logger.info("Could not get http return status")
         response.close()
@@ -1355,6 +1377,7 @@ class FgtConf:
 
    # Set scale-in protection
     def set_primary_scalein_protection(self, fgt_vm_id):
+        self.logger.info("Set primary instance scale in protection.")
         asg_client = boto3.client("autoscaling")
         b_succ= False
         if not fgt_vm_id:
@@ -1722,6 +1745,13 @@ class FgtConf:
                     set psksecret "{self.fgt_system_autoscale_psksecret}"
                 end
                 """
+                if self.health_check_port != 0 and self.health_check_protocol == "HTTP":
+                    temp_str += f"""
+                    config system probe-response
+                        set mode http-probe
+                        set port "{self.health_check_port}"
+                    end
+                """
                 config_content = re.sub(r"([\n ])\1*", r"\1", temp_str)
                 b_succ = self.upload_config(config_content, fgt_private_ip)
                 if b_succ:
@@ -1788,6 +1818,15 @@ class FgtConf:
         create_geneve_for_all_az = os.getenv('create_geneve_for_all_az') == 'true'
         az_name_map = json.loads(os.getenv('az_name_map'))
         rst = ""
+
+        # unset auth-lockout-duration 
+        if fgt_multi_vdom:
+            rst += "config global\n"
+        rst += "config user setting\n"
+        rst += "unset auth-lockout-duration\n"
+        rst += "end\n"
+        if fgt_multi_vdom:
+            rst += "end\n"
         # Geneve tunnel
         for intf_name, intf_conf in self.intf_setting.items():
             vdom = intf_conf.get("vdom", "root")
@@ -1876,6 +1915,13 @@ class FgtConf:
                     set role primary
                     set psksecret "{self.fgt_system_autoscale_psksecret}"
                 end
+                """
+                if self.health_check_port != 0 and self.health_check_protocol == "HTTP":
+                    temp_str += f"""
+                    config system probe-response
+                        set mode http-probe
+                        set port "{self.health_check_port}"
+                    end
                 """
             else:
                 autoscale_role = "Secondary"

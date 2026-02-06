@@ -48,11 +48,25 @@ resource "aws_route" "routes" {
 }
 
 ## VPC route table association
+data "aws_route_tables" "check_existing_subnet" {
+  count = length(var.rt_association_subnets)
+  filter {
+    name   = "association.subnet-id"
+    values = [var.rt_association_subnets[count.index]]
+  }
+}
+
 resource "aws_route_table_association" "rt_a_subnets" {
   count = length(var.rt_association_subnets)
 
   route_table_id = local.rt_id
   subnet_id      = var.rt_association_subnets[count.index]
+  lifecycle {
+    precondition {
+      condition     = length(data.aws_route_tables.check_existing_subnet[count.index].ids) == 0 || data.aws_route_tables.check_existing_subnet[count.index].ids[0] == local.rt_id
+      error_message = "Subnet is already associated with route table ${join(",", data.aws_route_tables.check_existing_subnet[count.index].ids)}. Remove it before associating a new route table."
+    }
+  }
 }
 
 resource "aws_route_table_association" "rt_a_gateways" {

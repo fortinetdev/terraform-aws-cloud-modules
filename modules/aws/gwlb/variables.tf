@@ -146,6 +146,7 @@ variable "health_check" {
             - enabled              : (Optional|bool) Whether health checks are enabled. Defaults to true.
             - healthy_threshold    : (Optional|number) Number of consecutive health check successes required before considering a target healthy. The range is 2-10. Defaults to 3.
             - interval             : (Optional|number) Approximate amount of time, in seconds, between health checks of an individual target. The range is 5-300. For lambda target groups, it needs to be greater than the timeout of the underlying lambda. Defaults to 30.
+            - matcher              : (Optional|string) The HTTP or gRPC codes to use when checking for a successful response from a target. The health_check.protocol must be one of HTTP or HTTPS or the target_type must be lambda. Values can be comma-separated individual values (e.g., "200,202") or a range of values (e.g., "200-299").
             - path                 : (Optional|string) Destination for the health check request. Required for HTTP/HTTPS ALB and HTTP NLB. Only applies to HTTP/HTTPS.
             - port                 : (Optional|number) The port the load balancer uses when performing health checks on targets. Default is traffic-port.
             - protocol             : (Optional|string) Protocol the load balancer uses when performing health checks on targets. Must be either TCP, HTTP, or HTTPS. The TCP protocol is not supported for health checks if the protocol of the target group is HTTP or HTTPS. Defaults to HTTP.
@@ -170,8 +171,10 @@ variable "health_check" {
   validation {
     condition = length(var.health_check) == 0 ? true : alltrue([
       for k, v in var.health_check : contains([
+        "enabled",
         "healthy_threshold",
         "interval",
+        "matcher",
         "path",
         "port",
         "protocol",
@@ -179,7 +182,7 @@ variable "health_check" {
         "unhealthy_threshold",
       ], k)
     ])
-    error_message = "One or more argument(s) can not be identified, available options: healthy_threshold, interval, path, port, protocol, timeout, unhealthy_threshold."
+    error_message = "One or more argument(s) can not be identified, available options: enabled, healthy_threshold, interval, matcher, path, port, protocol, timeout, unhealthy_threshold."
   }
 }
 

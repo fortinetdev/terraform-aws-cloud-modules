@@ -15,6 +15,7 @@ config system auto-scale
     set hb-interval ${fmg_integration.ums.hb_interval}
     set callback-url "${fmg_integration.ip}"
     set cloud-mode ums
+    set role primary
     set psksecret "${fmg_integration.ums.autoscale_psksecret}"
 end
 %{ if license_type == "on_demand" ~}
@@ -24,6 +25,11 @@ exec central-mgmt register-device-by-ip ${fmg_integration.ip} ${fmg_integration.
 %{ endif ~}
 %{ endif ~}
 %{ endif ~}
+%{ endif ~}
+%{ if fmg_integration == null || fmg_integration.fgt_lic_mgmt != "fmg" ~}
+config user setting
+set auth-lockout-duration 0
+end
 %{ endif ~}
 
 %{ if fgt_hostname != "" || fgt_login_port_number != "" || fgt_multi_vdom ~}
@@ -47,7 +53,7 @@ edit ${ lookup(intf_value, "vdom", "root") }
 %{ endif ~}
 config system interface
     edit "port${intf_value.device_index + 1}"
-        set allowaccess ping https ssh snmp http telnet fgfm
+        set allowaccess ping https ssh snmp http telnet fgfm probe-response
         %{ if fgt_multi_vdom ~}
         set vdom ${ lookup(intf_value, "vdom", "root") }
         %{ endif ~}

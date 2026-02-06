@@ -69,7 +69,7 @@ locals {
 }
 
 resource "aws_instance" "fgt" {
-  ami               = data.aws_ami.fgt_ami.id
+  ami               = local.fos_ami_id
   instance_type     = var.instance_type
   availability_zone = var.availability_zone == "" ? null : var.availability_zone
   key_name          = var.keypair_name

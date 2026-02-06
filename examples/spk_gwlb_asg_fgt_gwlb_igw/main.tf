@@ -70,6 +70,7 @@ locals {
               nat_gateway_id         = [for k, v in module.ngw : v.nat_gateway.id if v.availability_zone == az][0]
             }
           },
+          existing_rt            = lookup(var.existing_rts, "fgt_login_${az}", null),
           rt_association_subnets = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}fgt_login_") && v["availability_zone"] == az]
         }
       },
@@ -82,6 +83,7 @@ locals {
               gateway_id             = module.security-vpc.igw_id
             }
           },
+          existing_rt            = lookup(var.existing_rts, "ngw_igw", null),
           rt_association_subnets = [for k, v in local.create_subnets : local.subnets["${local.module_prefix}${k}"]["id"] if startswith(k, "ngw_")]
         }
       }
@@ -95,6 +97,7 @@ locals {
             gateway_id             = module.security-vpc.igw_id
           }
         },
+        existing_rt            = lookup(var.existing_rts, "fgt_login", null),
         rt_association_subnets = [for k, v in local.create_subnets : local.subnets["${local.module_prefix}${k}"]["id"] if startswith(k, "fgt_login_")]
       }
     }
@@ -156,6 +159,7 @@ module "security_route_table" {
   vpc_id                  = module.security-vpc.vpc_id
   rt_name                 = each.key
   routes                  = lookup(each.value, "routes", {})
+  existing_rt             = lookup(each.value, "existing_rt", null)
   rt_association_subnets  = lookup(each.value, "rt_association_subnets", [])
   rt_association_gateways = lookup(each.value, "rt_association_gateways", [])
   depends_on = [
@@ -184,6 +188,7 @@ module "fgt_asg" {
   source   = "../../modules/fortigate/fgt_asg"
   for_each = var.asgs
   # FortiGate instance template
+  vpc_id                         = module.security-vpc.vpc_id
   template_name                  = lookup(each.value, "template_name", "")
   ami_id                         = lookup(each.value, "ami_id", null) != null ? each.value.ami_id : lookup(var.fgt_config_shared, "ami_id", null) != null ? var.fgt_config_shared.ami_id : ""
   fgt_version                    = lookup(each.value, "fgt_version", null) != null ? each.value.fgt_version : lookup(var.fgt_config_shared, "fgt_version", null) != null ? var.fgt_config_shared.fgt_version : ""
@@ -229,11 +234,13 @@ module "fgt_asg" {
   create_dynamodb_table      = lookup(each.value, "create_dynamodb_table", null)
   dynamodb_table_name        = lookup(each.value, "dynamodb_table_name", null)
   primary_scalein_protection = lookup(each.value, "primary_scalein_protection", false)
+  health_check_port          = lookup(var.gwlb_health_check, "port", 0)
+  health_check_protocol      = lookup(var.gwlb_health_check, "protocol", "")
   dynamodb_privatelink = var.enable_privatelink_dydb ? {
     vpc_id                      = module.security-vpc.vpc_id
     region                      = var.region
     privatelink_subnet_ids      = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}privatelink_")]
-    privatelink_security_groups = [for sg_name in each.value.privatelink_security_groups : local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg_name}"]]
+    privatelink_security_groups = lookup(each.value, "privatelink_security_groups", null) == null ? [] : [for sg_name in each.value.privatelink_security_groups : local.secgrp_idmap_with_prefixname["${local.module_prefix}${sg_name}"]]
   } : null
   network_interfaces = merge(
     jsondecode(
@@ -404,15 +411,12 @@ module "security-vpc-gwlb" {
   tgp_name                         = var.tgp_name
   deregistration_delay             = 30
   enable_cross_zone_load_balancing = var.enable_cross_zone_load_balancing
-  health_check = {
-    port     = 80
-    protocol = "TCP"
-  }
-  vpc_id               = module.security-vpc.vpc_id
-  gwlb_ln_name         = "gwlb-ln"
-  gwlb_ep_service_name = var.gwlb_ep_service_name
-  gwlb_endps           = local.gwlb_endps
-  module_prefix        = local.module_prefix
+  health_check                     = var.gwlb_health_check
+  vpc_id                           = module.security-vpc.vpc_id
+  gwlb_ln_name                     = "gwlb-ln"
+  gwlb_ep_service_name             = var.gwlb_ep_service_name
+  gwlb_endps                       = local.gwlb_endps
+  module_prefix                    = local.module_prefix
   depends_on = [
     module.security-vpc
   ]

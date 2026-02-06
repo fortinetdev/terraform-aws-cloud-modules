@@ -35,3 +35,8 @@ output "module_prefix" {
 output "gwlb_endps" {
   value = module.security-vpc-gwlb.gwlb_endps
 }
+
+
+output "security_route_table" {
+  value = module.security_route_table
+}

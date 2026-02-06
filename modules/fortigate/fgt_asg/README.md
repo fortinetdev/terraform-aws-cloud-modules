@@ -68,6 +68,8 @@ No modules.
 | [aws_s3_object.fgt_intf_track_file](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_object) | resource |
 | [aws_s3_object.fgt_lic](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_object) | resource |
 | [aws_s3_object.fgt_lic_track_file](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_object) | resource |
+| [aws_security_group.lamnda_sg](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
+| [aws_security_group.sg_allow_lambda](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
 | [aws_vpc_endpoint.dynamodb](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/vpc_endpoint) | resource |
 | [archive_file.lambda_private](https://registry.terraform.io/providers/hashicorp/archive/latest/docs/data-sources/file) | data source |
 | [archive_file.lambda_public](https://registry.terraform.io/providers/hashicorp/archive/latest/docs/data-sources/file) | data source |
@@ -106,6 +108,8 @@ No modules.
 | <a name="input_fortiflex_sn_list"></a> [fortiflex\_sn\_list](#input\_fortiflex\_sn\_list) | Serial number list from FortiFlex account that used to activate FortiGate instance. | `list` | `[]` | no |
 | <a name="input_fortiflex_username"></a> [fortiflex\_username](#input\_fortiflex\_username) | Username of FortiFlex API user. | `string` | `null` | no |
 | <a name="input_gwlb_ips"></a> [gwlb\_ips](#input\_gwlb\_ips) | Gateway Load Balancer IPs that used for FortiGate configuration.<br/>Format:<pre>gwlb_ips = {<br/>        \<Subnet_id\> = \<IP\><br/>  }</pre>Example:<pre>gwlb_ips = {<br/>  subnet-12345678 = 10.0.0.47<br/>}</pre> | `map(string)` | `{}` | no |
+| <a name="input_health_check_port"></a> [health\_check\_port](#input\_health\_check\_port) | Load balancer health check port. | `number` | `0` | no |
+| <a name="input_health_check_protocol"></a> [health\_check\_protocol](#input\_health\_check\_protocol) | Load balancer health check protocol. | `string` | `""` | no |
 | <a name="input_instance_type"></a> [instance\_type](#input\_instance\_type) | Provide the instance type for the FortiGate instances | `string` | `"c6i.xlarge"` | no |
 | <a name="input_keypair_name"></a> [keypair\_name](#input\_keypair\_name) | The keypair name that used in FortiGate EC2 instance. | `string` | n/a | yes |
 | <a name="input_lambda_timeout"></a> [lambda\_timeout](#input\_lambda\_timeout) | Amount of time your Lambda Function has to run in seconds. Defaults to 300. | `number` | `300` | no |
@@ -122,6 +126,7 @@ No modules.
 | <a name="input_template_name"></a> [template\_name](#input\_template\_name) | The name of the launch template. If you leave this blank, Terraform will auto-generate a unique name. | `string` | `""` | no |
 | <a name="input_user_conf"></a> [user\_conf](#input\_user\_conf) | User configuration in CLI format that will applied to the FortiGate instance. | `string` | `""` | no |
 | <a name="input_user_conf_s3"></a> [user\_conf\_s3](#input\_user\_conf\_s3) | User configuration files in AWS S3 that will applied to FortiGate instance.<br/>The key is the Bucket name, and the value is a list of key names in this Bucket.<br/>Format:<pre>user_conf_s3 = {<br/>      \<Bucket name\> = []<br/>  }</pre> | `map(list(string))` | `{}` | no |
+| <a name="input_vpc_id"></a> [vpc\_id](#input\_vpc\_id) | The VPC ID for this ASG. | `string` | `""` | no |
 
 ## Outputs
 

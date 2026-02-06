@@ -1,5 +1,20 @@
 ## Unreleased
 
+## 1.1.4 (Feb 06, 2026)
+
+IMPROVEMENTS:
+* Fix index range issue when subnet_id_map is empty on module fgt_asg;
+* Add functionality of association status of subnets of modules vpc_route_table;
+* Add output of security_route_table for ASG examples;
+* Support existing route tables for security VPC;
+* Support customize health check options for AWS GWLB target group; 
+* Fix login issue of FortiGate instance in lambda function;
+* Improve log infomation;
+* Improve update FortiFlex SN list on DynamoDB function to avoid lost SN track;
+* Stop SNs if the status is ACTIVE but not used;
+* Handle the security group for internal function access by the module; 
+* Fix change password fail issue on Lambda function;
+
 ## 1.1.3 (Oct 30, 2025)
 
 IMPROVEMENTS:

@@ -5,7 +5,7 @@ variable "existing_rt" {
     If the id is specified, will use this route table ID. Otherwise, will search the route table based on the given infomation.
     Options:
         - id         :  ID of the specific route table.
-        - name       :  Name of the specific Vroute tablePC to retrieve.
+        - name       :  Name of the specific route table to retrieve.
         - tags       :  Map of tags, each pair of which must exactly match a pair on the desired route table.
         
     Example:

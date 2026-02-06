@@ -35,6 +35,41 @@ locals {
   fgt_userdata = templatefile("${path.module}/fgt-userdata.tftpl", local.vars)
 }
 
+## Create Security Group for Lambda function
+resource "aws_security_group" "lamnda_sg" {
+  name        = "${local.asg_name}_lambda_sg"
+  description = "Security group for Lambda function"
+  vpc_id      = var.vpc_id
+  egress {
+    from_port   = "0"
+    to_port     = "0"
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = lookup(var.tags, "general", {})
+
+}
+
+resource "aws_security_group" "sg_allow_lambda" {
+  name        = "${local.asg_name}_sg_allow_lambda"
+  description = "Security group to allow Lambda function Security Group to access."
+  vpc_id      = var.vpc_id
+  ingress {
+    from_port       = "0"
+    to_port         = "65535"
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lamnda_sg.id]
+  }
+  egress {
+    from_port   = "0"
+    to_port     = "0"
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = lookup(var.tags, "general", {})
+
+}
+
 
 ## FortiGate instance launch template
 resource "aws_launch_template" "fgt" {
@@ -49,10 +84,13 @@ resource "aws_launch_template" "fgt" {
     for_each = { for k, v in var.network_interfaces : k => v if v.device_index == 0 }
 
     content {
-      device_index                = 0
-      description                 = lookup(network_interfaces.value, "description", null)
-      security_groups             = lookup(network_interfaces.value, "security_groups", null)
-      subnet_id                   = values(network_interfaces.value["subnet_id_map"])[0]
+      device_index = 0
+      description  = lookup(network_interfaces.value, "description", null)
+      security_groups = distinct(concat(
+        lookup(network_interfaces.value, "security_groups", []),
+        [aws_security_group.sg_allow_lambda.id]
+      ))
+      subnet_id                   = length(values(network_interfaces.value["subnet_id_map"])) == 0 ? null : values(network_interfaces.value["subnet_id_map"])[0]
       associate_public_ip_address = lookup(network_interfaces.value, "enable_public_ip", null)
     }
   }
@@ -297,11 +335,14 @@ ITEM
 resource "aws_vpc_endpoint" "dynamodb" {
   count = local.enable_privatelink_dydb ? 1 : 0
 
-  vpc_id             = var.dynamodb_privatelink.vpc_id
-  service_name       = "com.amazonaws.${var.dynamodb_privatelink.region}.dynamodb"
-  subnet_ids         = var.dynamodb_privatelink.privatelink_subnet_ids
-  vpc_endpoint_type  = "Interface"
-  security_group_ids = var.dynamodb_privatelink.privatelink_security_groups
+  vpc_id            = var.dynamodb_privatelink.vpc_id
+  service_name      = "com.amazonaws.${var.dynamodb_privatelink.region}.dynamodb"
+  subnet_ids        = var.dynamodb_privatelink.privatelink_subnet_ids
+  vpc_endpoint_type = "Interface"
+  security_group_ids = distinct(concat(
+    var.dynamodb_privatelink.privatelink_security_groups,
+    [aws_security_group.sg_allow_lambda.id]
+  ))
 }
 
 resource "aws_s3_bucket" "fgt_lic" {
@@ -395,6 +436,7 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       internal_lambda_name           = "${local.asg_name}_fgt-asg-lambda-internal"
       asg_name                       = local.asg_name
       network_interfaces             = jsonencode(var.network_interfaces)
+      sg_allow_lambda                = aws_security_group.sg_allow_lambda.id
       lic_s3_name                    = local.lic_s3_name
       need_license                   = var.license_type == "byol" ? true : false
       fmg_integration                = jsonencode(var.fmg_integration)
@@ -414,6 +456,8 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       az_name_map                    = jsonencode(var.az_name_map)
       mgmt_intf_index                = var.mgmt_intf_index
       primary_scalein_protection     = var.enable_fgt_system_autoscale && var.primary_scalein_protection
+      health_check_port              = var.health_check_port
+      health_check_protocol          = var.health_check_protocol
     }
   }
 
@@ -448,10 +492,7 @@ resource "aws_lambda_function" "fgt_asg_lambda_internal" {
       concat([for intf_name, intf_info in var.network_interfaces : values(intf_info["subnet_id_map"]) if(intf_info["device_index"] == var.mgmt_intf_index && lookup(intf_info, "subnet_id_map", null) != null)]...),
       local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_subnet_ids : []
     ))
-    security_group_ids = distinct(concat(
-      concat([for intf_name, intf_info in var.network_interfaces : intf_info["security_groups"] if(intf_info["device_index"] == var.mgmt_intf_index && lookup(intf_info, "security_groups", null) != null)]...),
-      local.enable_privatelink_dydb ? var.dynamodb_privatelink.privatelink_security_groups : []
-    ))
+    security_group_ids = [aws_security_group.lamnda_sg.id]
   }
 
   environment {
