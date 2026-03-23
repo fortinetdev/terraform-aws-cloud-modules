@@ -21,6 +21,8 @@ data "aws_ami" "fgt_ami" {
   }
 }
 
+data "aws_partition" "current" {}
+
 locals {
   vars = {
     fgt_hostname          = var.fgt_hostname
@@ -226,6 +228,10 @@ resource "aws_iam_role" "iam_for_lambda" {
   }
 }
 
+locals {
+  aws_partition = data.aws_partition.current.partition != null ? data.aws_partition.current.partition : "aws"
+}
+
 resource "aws_iam_role_policy" "iam_policy" {
   name_prefix = "${var.module_prefix}lambda_terraform_module_fgt"
   role        = aws_iam_role.iam_for_lambda.id
@@ -240,7 +246,7 @@ resource "aws_iam_role_policy" "iam_policy" {
           "logs:PutLogEvents"
         ],
         Effect   = "Allow",
-        Resource = "arn:aws:logs:*:*:*"
+        Resource = "arn:${local.aws_partition}:logs:*:*:*"
       },
       {
         Action = [
@@ -275,7 +281,7 @@ resource "aws_iam_role_policy" "iam_policy" {
           "events:PutRule"
         ],
         Effect   = "Allow",
-        Resource = "arn:aws:events:*:*:rule/*"
+        Resource = "arn:${local.aws_partition}:events:*:*:rule/*"
       }
     ]
   })

@@ -76,19 +76,6 @@ locals {
             rt_association_subnets = [for k, v in local.subnets : v["id"] if startswith(k, "${local.module_prefix}fgt_login_") && v["availability_zone"] == az]
           }
         },
-        (module.security-vpc.has_igw == false ||
-          length([for k, v in local.create_subnets : k if startswith(k, "ngw_")]) == 0) ? {} : {
-          ngw_igw = {
-            routes = {
-              local_pc = {
-                destination_cidr_block = "0.0.0.0/0"
-                gateway_id             = module.security-vpc.igw_id
-              }
-            },
-            existing_rt            = lookup(var.existing_rts, "ngw_${az}", null),
-            rt_association_subnets = [for k, v in local.create_subnets : local.subnets["${local.module_prefix}${k}"]["id"] if startswith(k, "ngw_")]
-          }
-        }
       ) :
       (var.fgt_access_internet_mode != "eip" ||
         module.security-vpc.has_igw == false ||
@@ -514,7 +501,7 @@ resource "aws_cloudwatch_metric_alarm" "hybrid_asg" {
 module "ngw" {
   source = "../../modules/aws/nat_gateway"
 
-  for_each = var.fgt_access_internet_mode != "nat_gw" ? {} : var.existing_ngws != null && length(coalesce(var.existing_ngws, [])) != 0 ? {
+  for_each = var.existing_ngws != null && length(coalesce(var.existing_ngws, [])) != 0 ? {
     for i in range(length(var.existing_ngws)) : "existing_ngw${i}" => jsonencode(var.existing_ngws[i]) # jsonencode makes type consistancy for the true and false value
   } : { for k, v in local.subnets : k => v["id"] if startswith(k, "${local.module_prefix}ngw_") }
   subnet_id    = startswith(each.key, "existing_ngw") ? null : each.value

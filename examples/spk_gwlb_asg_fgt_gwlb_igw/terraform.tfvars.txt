@@ -41,7 +41,7 @@ asgs = {
       template_name = "fgt_asg_template"
       fgt_version = "7.2"
       license_type = "byol"
-      fgt_password = "<YOUR-OWN-VALUE>" # e.g. "fortinet"
+      fgt_password = "<YOUR-OWN-VALUE>" # e.g. "Fortinet@123"
       keypair_name = "<YOUR-OWN-VALUE>" # Keypair should be created manually
       lic_folder_path = "./license"
       # fortiflex_refresh_token = "<YOUR-OWN-VALUE>" # e.g. "NasmPa0CXpd56n6TzJjGqpqZm9Thyw"
@@ -62,12 +62,28 @@ asgs = {
       # asg_desired_capacity = 1
       create_dynamodb_table = true
       dynamodb_table_name = "fgt_asg_track_table"
+      ## For UMS feature:
+      # fmg_integration = {
+      #   ip = "<FMG-IP>"
+      #   sn = "<FMG-SN>"
+      #   fgt_lic_mgmt = "fmg"
+      #   ums = {
+      #     autoscale_psksecret = "<YOUR-OWN-VALUE>"
+      #     hb_interval = 10
+      #     fmg_password = "<YOUR-OWN-VALUE>" # Use only for PAYG type of FOS
+      #     api_key = "<FMG-API-KEY>"
+      #   }
+      # }
+      # metadata_options = {
+      #   http_endpoint               = "enabled"
+      #   instance_metadata_tags      = "enabled"
+      # }
   },
   fgt_on_demand_asg = {
       template_name = "fgt_asg_template_on_demand"
       fgt_version = "7.2"
       license_type = "on_demand"
-      fgt_password = "<YOUR-OWN-VALUE>" # e.g."fortinet"
+      fgt_password = "<YOUR-OWN-VALUE>" # e.g."Fortinet@123"
       keypair_name = "<YOUR-OWN-VALUE>" # e.g. Keypair should be created manually
       enable_fgt_system_autoscale = true
       intf_security_group = {
@@ -109,6 +125,22 @@ asgs = {
             scaling_adjustment        = -1
         }
       }
+      ## For UMS feature:
+      # fmg_integration = {
+      #   ip = "<FMG-IP>"
+      #   sn = "<FMG-SN>"
+      #   fgt_lic_mgmt = "fmg"
+      #   ums = {
+      #     autoscale_psksecret = "<YOUR-OWN-VALUE>"
+      #     hb_interval = 10
+      #     fmg_password = "<YOUR-OWN-VALUE>" # Use only for PAYG type of FOS
+      #     api_key = "<FMG-API-KEY>"
+      #   }
+      # }
+      # metadata_options = {
+      #   http_endpoint               = "enabled"
+      #   instance_metadata_tags      = "enabled"
+      # }
   }
 }
 

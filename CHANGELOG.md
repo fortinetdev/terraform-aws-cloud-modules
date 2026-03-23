@@ -1,5 +1,15 @@
 ## Unreleased
 
+## 1.1.5 (Mar 23, 2026)
+
+IMPROVEMENTS:
+* Fix issue of can not change password due to the instance been locked;
+* Fix invalid reference issue of example spk_tgw_gwlb_asg_fgt_gwlb_igw; 
+* Fix hardcode aws partition issue of module fgt_asg;
+* Update config example to add fmg_intergration config and fix password invalid issue; 
+* Fix route table for ngw issue of example spk_tgw_gwlb_asg_fgt_gwlb_igw;
+* Fix issue of 2-arm mode could not register to FMG with UMS enabled;
+
 ## 1.1.4 (Feb 06, 2026)
 
 IMPROVEMENTS:
