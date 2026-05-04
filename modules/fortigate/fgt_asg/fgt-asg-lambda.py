@@ -55,37 +55,54 @@ class NetworkInterface:
         self.logger.info(f"Do interface config")
         
         if detail_type == "EC2 Instance-launch Lifecycle Action":
-            self.do_launch()
+            success = self.do_launch()
+            return success
         elif detail_type == "EC2 Instance-terminate Lifecycle Action":
             self.do_terminate()
+            return False #do nothing
         if detail_type == "EC2 Instance Launch Successful":
             self.save_intf()
-            return
+            return False #do nothing
         else:
-            self.logger.info(f"Can not identify detail-type: {detail_type}")
-            return
+            self.logger.info(f"Can not identify detail-type Network stage: {detail_type}")
+            return False #do nothing
         
     def do_launch(self):
         self.logger.info(f"Do launch fgt vm instance: {self.fgt_vm_id}")
         intf_setting = json.loads(os.getenv('network_interfaces'))
         fgt_az = self.instance_detail['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+        success = False
         for intf_name, intf_conf in intf_setting.items():
-            # Ignore if the interface already exist
+            # 1. Ignore if the interface already exist
             if str(intf_conf["device_index"]) in self.fgt_vm_intfs:
+                self.logger.info("Ignoring the interface already exist") # #this is where we go
                 continue
-            # Create interface
+            # 2. Create interface
             cur_intf_id = self.create_interface(intf_name, intf_conf, fgt_az)
-            if cur_intf_id == None:
-                continue
-            # Attach the interface to FortiGate VM instance
+            self.logger.info("Create interface")
+            if cur_intf_id == None: #None means it has an error during create_interface function
+                return False
+            # 3. Attach the interface to FortiGate VM instance
             attach_id = self.attach_intf(cur_intf_id, intf_conf["device_index"])
-            if attach_id == None:
-                self.delete_interface(cur_intf_id)
+            self.logger.info("Attach the interface to FortiGate VM instance")
+            if attach_id == None: 
+                result = self.delete_interface(cur_intf_id) #Need to delete the interface if not able to attach
+                if not result:  #if error occurs on the delete_interface function
+                    return False
                 continue
+            # If 1, 2 and 3 is False - set delete on termination
             self.set_delete_on_termination(cur_intf_id, attach_id)
             # Create and associate Public IP if needed
+            self.logger.info("Create and associate Public IP if needed")
             if "enable_public_ip" in intf_conf and intf_conf["enable_public_ip"] :
-                self.associate_pub_ip(cur_intf_id, intf_conf)
+                associate_pub_ip_id = self.associate_pub_ip(cur_intf_id, intf_conf)
+                if associate_pub_ip_id == None:   #add a check if we have successfully associate the public Interface
+                    return False
+                 
+
+        self.logger.info (f"Loop finished without error succesfully configured network interface for {self.fgt_vm_id}")
+        success = True
+        return success
 
     def do_terminate(self):
         self.logger.info(f"Do terminate fgt vm instance: {self.fgt_vm_id}")
@@ -134,7 +151,7 @@ class NetworkInterface:
                         break
                     time.sleep(1)
                 if detached:
-                    self.delete_interface(intf_id)
+                    result = self.delete_interface(intf_id) #nothing to do on the result value here
                 else:
                     self.logger.error(f"Could not detach network interface: {intf_id}")
         except Exception as e:
@@ -271,9 +288,10 @@ class NetworkInterface:
         response = ""
         try:
             response = self.ec2_client.delete_network_interface(NetworkInterfaceId=cur_intf_id)
+            return True
         except ClientError as e:
             self.logger.error(f"Error deleting network interface {cur_intf_id}: {e.response['Error']['Code']}, response: {response}")
-
+            return False
 
     def lock_intf_track_file(self):
         self.logger.info("Lock interface track file from S3 bucket.")
@@ -482,13 +500,15 @@ class FgtConf:
         self.fgt_vm_id = vm_id
 
     def main(self, detail_type):
-        if detail_type == "EC2 Instance Launch Successful":
-            self.do_launch()
+        if detail_type == "EC2 Instance-launch Lifecycle Action":
+            b_succ = self.do_launch()
+            return b_succ
         elif detail_type == "EC2 Instance-terminate Lifecycle Action":
             self.do_terminate()
+            return False #do nothing
         else:
-            self.logger.debug(f"Can not identify detail-type: {detail_type}")
-            return
+            self.logger.debug(f"Can not identify detail-type FGT conf stage: {detail_type}")
+            return False #do nothing
     
     def do_launch(self):
         self.logger.info("Do launch event.")
@@ -502,15 +522,16 @@ class FgtConf:
             }]
         )
         # Get private IP
+        b_succ = False # Initialize b_succ value
         fgt_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
         if not fgt_private_ip:
             self.logger.error("Can not find private IP.")
-            return
+            return False
         # Change password
         b_succ = self.change_password(fgt_private_ip, self.fgt_vm_id)
         if not b_succ:
             self.logger.error(f"Change password failed.")
-            return
+            return False
         
         # Update in Dynamo DB
         self.add_asg_instance_dydb(self.fgt_vm_id)
@@ -521,7 +542,7 @@ class FgtConf:
             b_succ = self.update_all_sn_list()
             b_succ = self.upload_license(fgt_private_ip, self.fgt_vm_id)
             if not b_succ:
-                return
+                return False
 
         # Configure the FortiGate instance
         if self.fgt_lic_mgmt != "fmg":
@@ -532,6 +553,8 @@ class FgtConf:
 
             config_content = self.gen_config_content(self.fgt_vm_id)
             b_succ = self.upload_config(config_content, fgt_private_ip)
+            
+        return b_succ
 
         
     def do_terminate(self):
@@ -2048,7 +2071,7 @@ def clean_terminated_vms(logger, intf_object, fgtconf_object):
         fgtconf_object.set_vm_id(vm_id)
         fgtconf_object.do_terminate()
 
-def complete_lifecycle(logger, event_detail):
+def complete_lifecycle(logger, event_detail, result="ABANDON"):
     logger.info("Complete lifecycle action.")
     asg_client = boto3.client('autoscaling')
     try:
@@ -2056,39 +2079,102 @@ def complete_lifecycle(logger, event_detail):
             LifecycleHookName=event_detail.get('LifecycleHookName', ""),
             AutoScalingGroupName=event_detail.get('AutoScalingGroupName', ""),
             LifecycleActionToken=event_detail.get('LifecycleActionToken', ""),
-            LifecycleActionResult='CONTINUE'
+            LifecycleActionResult=result
         )
     except ClientError as e:
         logger.error(f"Error completing life cycle hook for instance: {e.response['Error']['Code']}")
 
 def lambda_handler(event, context):
-    logger = logging.getLogger("fgt_asg_lambda")
-    logger.setLevel(logging.INFO)
-    event_detail = event["detail"]
-    fgt_vm_id = event["detail"]["EC2InstanceId"]
-    detail_type = event["detail-type"]
 
-    # Initiate objects
-    intf_object = NetworkInterface(logger)
-    fgtconf_object = FgtConf(logger)
+    try: 
+        logger = logging.getLogger("fgt_asg_lambda")
+        logger.setLevel(logging.INFO)
 
-    # If detail_type is launch related, check and clean the VMs before main operation
-    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance Launch Successful"]:
-        clean_terminated_vms(logger, intf_object, fgtconf_object)
+        # --- ADDED: Log incoming event for debugging lifecycle hook routing ---
+        # Key fields from EventBridge event:
+        #   event["detail-type"]                    - Event type (e.g., "EC2 Instance-launch Lifecycle Action")
+        #   event["detail"]["EC2InstanceId"]        - Instance being acted upon
+        #   event["detail"]["AutoScalingGroupName"] - ASG that triggered the event
+        #   event["detail"]["LifecycleHookName"]    - Name of the lifecycle hook (used for routing)
+        #   event["detail"]["LifecycleActionToken"] - Token for completing the hook (only in lifecycle events)
+        logger.info("=" * 60)
+        logger.info("fgt-asg-lambda invoked")
+        logger.info(f"Event detail-type: {event.get('detail-type', 'N/A')}")
+        logger.info(f"Full event: {json.dumps(event, default=str)}")
+        logger.info("=" * 60)
+        # --- END ADDED ---
 
-    ## Network Interface operations
-    intf_object.set_vm_id(fgt_vm_id)
-    intf_object.main(detail_type)
+        event_detail = event["detail"]
+        fgt_vm_id = event["detail"]["EC2InstanceId"]
+        detail_type = event["detail-type"]
 
-    ## FortiGate configuration operations
-    fgtconf_object.set_vm_id(fgt_vm_id)
-    fgtconf_object.main(detail_type)
+        # Log key fields extracted from event
+        logger.info(f"Processing event:")
+        logger.info(f"  detail_type: {detail_type}")
+        logger.info(f"  EC2InstanceId: {fgt_vm_id}")
+        logger.info(f"  AutoScalingGroupName: {event_detail.get('AutoScalingGroupName', 'N/A')}")
+        logger.info(f"  LifecycleHookName: {event_detail.get('LifecycleHookName', 'N/A')}")
+        lifecycle_token = event_detail.get('LifecycleActionToken', '')
+        logger.info(f"  LifecycleActionToken: {lifecycle_token[:20] + '...' if lifecycle_token else 'N/A'}")
 
-    # If detail_type is terminate related, check and clean the VMs after main operation
-    if detail_type == "EC2 Instance-terminate Lifecycle Action":
-        clean_terminated_vms(logger, intf_object, fgtconf_object)
-    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
-        complete_lifecycle(logger, event_detail)
-    return {}
+        # --- EARLY EXIT: Skip unmanaged lifecycle hooks ---
+        # EventBridge routes ALL lifecycle events for this ASG to this Lambda
+        # because the rule filters by AutoScalingGroupName only, not LifecycleHookName.
+        # Exit early for hooks not managed by this Lambda to avoid unnecessary processing.
+        managed_hooks = ['fgt_asg_launch_hook', 'fgt_asg_terminate_hook']
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+            hook_name = event_detail.get('LifecycleHookName', '')
+            if hook_name not in managed_hooks:
+                logger.info(f"Skipping unmanaged lifecycle hook: {hook_name} - exiting early")
+                return {}
+            logger.info(f"Processing managed lifecycle hook: {hook_name}")
+        # --- END EARLY EXIT ---
 
+        # Initiate objects
+        intf_object = NetworkInterface(logger)
+        fgtconf_object = FgtConf(logger)
 
+        # If detail_type is launch related, check and clean the VMs before main operation
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance Launch Successful"]:
+            clean_terminated_vms(logger, intf_object, fgtconf_object)
+
+        ## Network Interface operations
+        intf_object.set_vm_id(fgt_vm_id)
+        success_network = intf_object.main(detail_type)
+        logger.info (f"Printing NetworkInterface operations success {success_network}")
+
+        if detail_type == "EC2 Instance-launch Lifecycle Action":
+            if not success_network:
+                logger.info(f"Configuring NetworkInterface {fgt_vm_id} failed - abandoning instance")
+                complete_lifecycle(logger, event_detail, result="ABANDON")
+                return {}
+
+        ## FortiGate configuration operations
+        fgtconf_object.set_vm_id(fgt_vm_id)
+        success_fgtconf = fgtconf_object.main(detail_type)
+        logger.info (f"Printing FGTConf operations success {success_fgtconf}")
+
+        if detail_type == "EC2 Instance-launch Lifecycle Action":
+            if not success_fgtconf:
+                logger.info(f"Configuring FortiGate {fgt_vm_id} failed - abandoning instance")
+                complete_lifecycle(logger, event_detail, result="ABANDON")
+                return {}
+            
+
+        # If detail_type is terminate related, check and clean the VMs after main operation
+        if detail_type == "EC2 Instance-terminate Lifecycle Action":
+            clean_terminated_vms(logger, intf_object, fgtconf_object)
+
+        # Complete lifecycle hook for managed hooks
+        # (We already verified this is a managed hook via the early exit check above)
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+            hook_name = event_detail.get('LifecycleHookName', '')
+            logger.info(f"Completing lifecycle hook: {hook_name}")
+            complete_lifecycle(logger, event_detail,result="CONTINUE" )
+
+        return {}
+    
+    except Exception as e:
+      logger.error(f"Encountered an error cannot complete fgt_asg_lambda lifecycle hook {e}")
+      complete_lifecycle(logger, event_detail,result="ABANDON" )
+      return {}
