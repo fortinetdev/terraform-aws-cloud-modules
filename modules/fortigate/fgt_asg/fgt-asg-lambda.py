@@ -71,7 +71,6 @@ class NetworkInterface:
         self.logger.info(f"Do launch fgt vm instance: {self.fgt_vm_id}")
         intf_setting = json.loads(os.getenv('network_interfaces'))
         fgt_az = self.instance_detail['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
-        success = False
         for intf_name, intf_conf in intf_setting.items():
             # 1. Ignore if the interface already exist
             if str(intf_conf["device_index"]) in self.fgt_vm_intfs:
@@ -95,14 +94,12 @@ class NetworkInterface:
             # Create and associate Public IP if needed
             self.logger.info("Create and associate Public IP if needed")
             if "enable_public_ip" in intf_conf and intf_conf["enable_public_ip"] :
-                associate_pub_ip_id = self.associate_pub_ip(cur_intf_id, intf_conf)
-                if associate_pub_ip_id == None:   #add a check if we have successfully associate the public Interface
-                    return False
+                self.associate_pub_ip(cur_intf_id, intf_conf)
+
                  
 
         self.logger.info (f"Loop finished without error succesfully configured network interface for {self.fgt_vm_id}")
-        success = True
-        return success
+        return True
 
     def do_terminate(self):
         self.logger.info(f"Do terminate fgt vm instance: {self.fgt_vm_id}")
@@ -522,7 +519,7 @@ class FgtConf:
             }]
         )
         # Get private IP
-        b_succ = False # Initialize b_succ value
+        b_succ = True # Initialize b_succ value
         fgt_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
         if not fgt_private_ip:
             self.logger.error("Can not find private IP.")
