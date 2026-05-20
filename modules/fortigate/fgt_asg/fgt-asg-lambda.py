@@ -2161,7 +2161,6 @@ def lambda_handler(event, context):
         # Complete lifecycle hook for managed hooks
         # (We already verified this is a managed hook via the early exit check above)
         if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
-            hook_name = event_detail.get('LifecycleHookName', '')
             logger.info(f"Completing lifecycle hook: {hook_name}")
             complete_lifecycle(logger, event_detail,result="CONTINUE" )
 
