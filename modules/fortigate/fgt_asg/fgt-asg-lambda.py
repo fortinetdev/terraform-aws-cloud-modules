@@ -2114,9 +2114,12 @@ def lambda_handler(event, context):
         # EventBridge routes ALL lifecycle events for this ASG to this Lambda
         # because the rule filters by AutoScalingGroupName only, not LifecycleHookName.
         # Exit early for hooks not managed by this Lambda to avoid unnecessary processing.
+
+        # create variable for hook_name
+        hook_name = event_detail.get('LifecycleHookName', '')
+        # create variable for managed_hooks
         managed_hooks = ['fgt_asg_launch_hook', 'fgt_asg_terminate_hook']
         if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
-            hook_name = event_detail.get('LifecycleHookName', '')
             if hook_name not in managed_hooks:
                 logger.info(f"Skipping unmanaged lifecycle hook: {hook_name} - exiting early")
                 return {}
