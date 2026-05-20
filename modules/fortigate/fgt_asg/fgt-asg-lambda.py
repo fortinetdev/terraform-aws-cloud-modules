@@ -85,10 +85,9 @@ class NetworkInterface:
             attach_id = self.attach_intf(cur_intf_id, intf_conf["device_index"])
             self.logger.info("Attach the interface to FortiGate VM instance")
             if attach_id == None: 
-                result = self.delete_interface(cur_intf_id) #Need to delete the interface if not able to attach
-                if not result:  #if error occurs on the delete_interface function
-                    return False
-                continue
+                self.delete_interface(cur_intf_id) #Leave the result for delete_interface for now, Xing said we will work on this in the future.
+                return False
+            continue
             # If 1, 2 and 3 is False - set delete on termination
             self.set_delete_on_termination(cur_intf_id, attach_id)
             # Create and associate Public IP if needed
@@ -148,7 +147,7 @@ class NetworkInterface:
                         break
                     time.sleep(1)
                 if detached:
-                    result = self.delete_interface(intf_id) #nothing to do on the result value here
+                    self.delete_interface(intf_id)
                 else:
                     self.logger.error(f"Could not detach network interface: {intf_id}")
         except Exception as e:
@@ -285,10 +284,9 @@ class NetworkInterface:
         response = ""
         try:
             response = self.ec2_client.delete_network_interface(NetworkInterfaceId=cur_intf_id)
-            return True
         except ClientError as e:
             self.logger.error(f"Error deleting network interface {cur_intf_id}: {e.response['Error']['Code']}, response: {response}")
-            return False
+
 
     def lock_intf_track_file(self):
         self.logger.info("Lock interface track file from S3 bucket.")
@@ -519,7 +517,6 @@ class FgtConf:
             }]
         )
         # Get private IP
-        b_succ = True # Initialize b_succ value
         fgt_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
         if not fgt_private_ip:
             self.logger.error("Can not find private IP.")
@@ -549,7 +546,7 @@ class FgtConf:
             self.fgt_primary_ip, self.fgt_primary_port = self.get_primary_ip(instance_detail['Reservations'][0]['Instances'][0])
 
             config_content = self.gen_config_content(self.fgt_vm_id)
-            b_succ = self.upload_config(config_content, fgt_private_ip)
+            b_succ = self.upload_config(config_content, fgt_private_ip) #b_succ is either True or False
             
         return b_succ
 
@@ -2107,7 +2104,6 @@ def lambda_handler(event, context):
 
         # Log key fields extracted from event
         logger.info(f"Processing event:")
-        logger.info(f"  detail_type: {detail_type}")
         logger.info(f"  EC2InstanceId: {fgt_vm_id}")
         logger.info(f"  AutoScalingGroupName: {event_detail.get('AutoScalingGroupName', 'N/A')}")
         logger.info(f"  LifecycleHookName: {event_detail.get('LifecycleHookName', 'N/A')}")
