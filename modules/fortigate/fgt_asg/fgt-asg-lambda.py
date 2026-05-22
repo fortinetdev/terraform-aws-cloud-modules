@@ -87,7 +87,6 @@ class NetworkInterface:
             if attach_id == None: 
                 self.delete_interface(cur_intf_id) #Leave the result for delete_interface for now, Xing said we will work on this in the future.
                 return False
-            continue
             # If 1, 2 and 3 is False - set delete on termination
             self.set_delete_on_termination(cur_intf_id, attach_id)
             # Create and associate Public IP if needed
