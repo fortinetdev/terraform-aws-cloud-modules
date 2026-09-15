@@ -65,7 +65,10 @@ asgs = {
       asg_max_size = 1
       asg_min_size = 1
       # asg_desired_capacity = 1
+      # This is the hybrid license mode: this BYOL ASG owns the DynamoDB track table
+      # shared by all the ASGs, so only this ASG sets create_dynamodb_table to true.
       create_dynamodb_table = true
+      # Note: the created table name gets the module_prefix prepended, e.g. "pfx-fgt_asg_track_table" with module_prefix "pfx-".
       dynamodb_table_name = "fgt_asg_track_table"
       ## For UMS feature:
       # fmg_integration = {
@@ -83,6 +86,24 @@ asgs = {
       #   http_endpoint               = "enabled"
       #   instance_metadata_tags      = "enabled"
       # }
+      # iam_instance_profile = "<YOUR-OWN-VALUE>" # e.g. "fgt-asg-instance-profile"
+      # primary_election = {
+      #   allowed_asg_names     = ["fgt_byol_asg"]
+      #   allowed_license_types = ["byol"]
+      #   preferred_azs         = ["us-east-1a"]
+      #   order_by              = "newest"
+      # }
+      # Termination policy for scale-in. Default AWS policy terminates the instance closest to
+      # the next billing hour, which churns licenses/IPs on long-lived instances.
+      # "NewestInstance" keeps the existing instances (and their licenses) stable, but may
+      # unbalance the instance distribution across Availability Zones.
+      # asg_termination_policies = ["NewestInstance"]
+      # Tolerance of the Lambda to failures during the FortiGate launch. A launch
+      # failure beyond the tolerance abandons the instance, the Auto Scaling group
+      # replaces it with a new one. Options: strict (any failure abandons), normal
+      # (a failure of a required part abandons), lenient (never abandons;
+      # recommended for the first deployment).
+      # lambda_failure_tolerance = "lenient"
   },
   fgt_on_demand_asg = {
       template_name = "fgt_asg_template_on_demand"
@@ -103,6 +124,9 @@ asgs = {
       asg_max_size = 2
       asg_min_size = 0
       # asg_desired_capacity = 0
+      # This on-demand ASG shares the track table created by the BYOL ASG, so create_dynamodb_table is not set here.
+      # Note: pass the full table name of the table owner here. The table name is used as-is (no module_prefix is prepended),
+      # so when a module_prefix is set, use e.g. "pfx-fgt_asg_track_table" with module_prefix "pfx-".
       dynamodb_table_name = "fgt_asg_track_table"
       scale_policies = {
         byol_cpu_above_80 = {
@@ -146,6 +170,24 @@ asgs = {
       #   http_endpoint               = "enabled"
       #   instance_metadata_tags      = "enabled"
       # }
+      # iam_instance_profile = "<YOUR-OWN-VALUE>" # e.g. "fgt-asg-instance-profile"
+      # primary_election = {
+      #   allowed_asg_names     = ["fgt_byol_asg"]
+      #   allowed_license_types = ["byol"]
+      #   preferred_azs         = ["us-east-1a"]
+      #   order_by              = "newest"
+      # }
+      # Termination policy for scale-in. Default AWS policy terminates the instance closest to
+      # the next billing hour, which churns licenses/IPs on long-lived instances.
+      # "NewestInstance" keeps the existing instances (and their licenses) stable, but may
+      # unbalance the instance distribution across Availability Zones.
+      # asg_termination_policies = ["NewestInstance"]
+      # Tolerance of the Lambda to failures during the FortiGate launch. A launch
+      # failure beyond the tolerance abandons the instance, the Auto Scaling group
+      # replaces it with a new one. Options: strict (any failure abandons), normal
+      # (a failure of a required part abandons), lenient (never abandons;
+      # recommended for the first deployment).
+      # lambda_failure_tolerance = "lenient"
   }
 }
 

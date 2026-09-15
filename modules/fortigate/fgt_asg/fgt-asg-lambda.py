@@ -53,39 +53,63 @@ class NetworkInterface:
 
     def main(self, detail_type):
         self.logger.info(f"Do interface config")
-        
+
         if detail_type == "EC2 Instance-launch Lifecycle Action":
-            self.do_launch()
+            # The launch outcome: "success", "degraded" (only the optional
+            # parts failed) or "failed" (a required interface is missing).
+            return self.do_launch()
         elif detail_type == "EC2 Instance-terminate Lifecycle Action":
             self.do_terminate()
+            return "skipped" # do nothing
         if detail_type == "EC2 Instance Launch Successful":
             self.save_intf()
-            return
+            return "skipped" # do nothing
         else:
             self.logger.info(f"Can not identify detail-type: {detail_type}")
-            return
-        
+            return "skipped" # do nothing
+
     def do_launch(self):
         self.logger.info(f"Do launch fgt vm instance: {self.fgt_vm_id}")
         intf_setting = json.loads(os.getenv('network_interfaces'))
         fgt_az = self.instance_detail['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+        outcome = "success"
         for intf_name, intf_conf in intf_setting.items():
             # Ignore if the interface already exist
             if str(intf_conf["device_index"]) in self.fgt_vm_intfs:
                 continue
+            # A critical interface failure fails the launch: the instance can
+            # not work without it. A non-critical (additional) interface
+            # failure does not block the launch, the instance runs without it
+            # and its configuration is skipped by the configuration generation.
+            intf_critical = intf_conf.get("critical", False)
             # Create interface
             cur_intf_id = self.create_interface(intf_name, intf_conf, fgt_az)
             if cur_intf_id == None:
+                if intf_critical:
+                    # Could not create the interface, the instance can not work without it
+                    return "failed"
+                self.logger.error(f"Could not create the non-critical interface: {intf_name}, continue without it.")
                 continue
             # Attach the interface to FortiGate VM instance
             attach_id = self.attach_intf(cur_intf_id, intf_conf["device_index"])
             if attach_id == None:
+                # Clean up the interface which failed to attach
                 self.delete_interface(cur_intf_id)
+                if intf_critical:
+                    # The attach failure itself marks the launch failed
+                    return "failed"
+                self.logger.error(f"Could not attach the non-critical interface: {intf_name}, continue without it.")
                 continue
             self.set_delete_on_termination(cur_intf_id, attach_id)
-            # Create and associate Public IP if needed
+            # Create and associate Public IP if needed.
+            # The public IP is optional (e.g. for manually checking the FGT instance
+            # on a non-port1 interface), the association failure only degrades
+            # the launch, like when reaching the AWS public IP limitation.
             if "enable_public_ip" in intf_conf and intf_conf["enable_public_ip"] :
-                self.associate_pub_ip(cur_intf_id, intf_conf)
+                if self.associate_pub_ip(cur_intf_id, intf_conf) == None:
+                    outcome = "degraded"
+        self.logger.info(f"Configured network interfaces for instance: {self.fgt_vm_id}")
+        return outcome
 
     def do_terminate(self):
         self.logger.info(f"Do terminate fgt vm instance: {self.fgt_vm_id}")
@@ -101,6 +125,7 @@ class NetworkInterface:
                 continue
             self.clean_up_intf(intf)
         self.remove_intf()
+        return "success"
 
     def clean_up_intf(self, intf):
         self.logger.info(f"Clean up interface: {intf}")
@@ -454,12 +479,18 @@ class FgtConf:
         self.logger.info(f"Do FGT config.")
         self.fgt_vm_id = fgt_vm_id
         self.cookie = {}
+        self.lock_id = ""
+        # DynamoDB lock: lock id is generated once per event (object level), shared by all locked categories
+        self.dydb_lock_id = str(uuid.uuid1())
+        self.locked_category_list = []
         self.lic_track_file_name = "asg-fgt-lic-track.json"
         self.s3_bucket_name = os.getenv("lic_s3_name")
         self.need_license = os.getenv("need_license") == "true"
         self.enable_privatelink_dydb = os.getenv("enable_privatelink_dydb") == "true"
         self.fmg_integration = json.loads(os.getenv("fmg_integration"))
         self.fgt_lic_mgmt = self.fmg_integration.get("fgt_lic_mgmt", "") if self.fmg_integration else ""
+        if self.fmg_integration and self.fmg_integration.get("ums", {}):
+            self.fgt_lic_mgmt = "fmg"
         if not self.enable_privatelink_dydb:
             self.dynamodb_client = boto3.client(
                 "dynamodb",
@@ -475,27 +506,80 @@ class FgtConf:
         self.mgmt_intf_index = os.getenv("mgmt_intf_index")
         self.asg_name = os.getenv("asg_name")
         self.primary_scalein_protection = os.getenv("primary_scalein_protection") == "true"
+        # The environment variable can be the JSON string "null" when the
+        # module variable is not set (jsonencode(null) = "null"), so the
+        # loaded value can be None despite the "{}" fallback above.
+        self.primary_election = json.loads(os.getenv("primary_election") or "{}") or {}
+        # Map license type to the AWS marketplace product code of the FortiGate AMI,
+        # used to check which license type a candidate instance belongs to.
+        # Same "null" JSON string pitfall as primary_election above.
+        self.license_product_code_map = json.loads(os.getenv("license_product_code_map") or "{}") or {}
         self.health_check_port = os.getenv("health_check_port")
         self.health_check_protocol = os.getenv("health_check_protocol")
+        self.configid_list = json.loads(os.getenv("fortiflex_configid_list"))
+        self.configname_list = json.loads(os.getenv("fortiflex_configname_list"))
 
     def set_vm_id(self, vm_id):
         self.fgt_vm_id = vm_id
 
     def main(self, detail_type):
-        if detail_type == "EC2 Instance Launch Successful":
-            self.do_launch()
+        self.check_dydb_table_exist()
+        if detail_type == "EC2 Instance-launch Lifecycle Action":
+            return self.do_launch()
         elif detail_type == "EC2 Instance-terminate Lifecycle Action":
             self.do_terminate()
+            return "skipped" # do nothing
         else:
             self.logger.debug(f"Can not identify detail-type: {detail_type}")
-            return
-    
+            return "skipped" # do nothing
+
+    def check_dydb_table_exist(self):
+        # Check whether the DynamoDB track table exists.
+        self.logger.info("Check whether the DynamoDB track table exists.")
+        if self.enable_privatelink_dydb:
+            payload = {
+                "service" : "dynamodb",
+                "operation" : "check_table",
+                "parameters" : {}
+            }
+            b_succ, rst = self.invoke_lambda(payload, "fgt")
+            # The public lambda has no table name in the privatelink mode,
+            # the internal lambda reports its own table name along.
+            b_exist = rst.get("table_exist", False) if b_succ else None
+            table_name = rst.get("table_name", "") if b_succ else ""
+        else:
+            table_name = self.dynamodb_table_name
+            try:
+                self.dynamodb_client.describe_table(TableName=self.dynamodb_table_name)
+                b_exist = True
+            except botocore.exceptions.ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    b_exist = False
+                else:
+                    # Could not determine (throttling, network, permission):
+                    # stay silent here, the following operations log their own
+                    # errors if the table is really missing.
+                    self.logger.info(f"Could not check the DynamoDB table: {e}")
+                    return
+            except Exception as err:
+                self.logger.info(f"Could not check the DynamoDB table: {err}")
+                return
+        if b_exist is False:
+            self.logger.warning(
+                f"The DynamoDB table {table_name} does not exist. "
+                "The FortiGate ASG can not work without its track table. "
+                "If this ASG shares the table with another ASG (e.g. hybrid BYOL + on-demand mode), "
+                "the table owner ASG creates the table with the module_prefix prepended to dynamodb_table_name "
+                "(e.g. \"pfx-fgt_asg_track_table\" with prefix \"pfx-\"), so set dynamodb_table_name of this ASG "
+                "to the full table name including the prefix."
+            )
+
     def do_launch(self):
         self.logger.info("Do launch event.")
         instance_detail = self.ec2_client.describe_instances(InstanceIds=[self.fgt_vm_id])
         # Add name for the instance
         self.update_tags(
-            [self.fgt_vm_id], 
+            [self.fgt_vm_id],
             [{
                 'Key': 'Name',
                 'Value': self.asg_name
@@ -505,25 +589,48 @@ class FgtConf:
         fgt_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
         if not fgt_private_ip:
             self.logger.error("Can not find private IP.")
-            return
+            return "failed"
         # Change password
-        b_succ = self.change_password(fgt_private_ip, self.fgt_vm_id)
-        if not b_succ:
-            self.logger.error(f"Change password failed.")
-            return
-        
-        # Update in Dynamo DB
-        self.add_asg_instance_dydb(self.fgt_vm_id)
+        if self.fgt_lic_mgmt != "fmg":
+            b_succ = self.change_password(fgt_private_ip, self.fgt_vm_id)
+            if not b_succ:
+                self.logger.error(f"Change password failed.")
+                return "failed"
+
+        # Update in Dynamo DB. The registration makes the instance visible to
+        # the terminate cleanup and the primary election, a failure degrades
+        # the launch but the instance itself still works, so it does not fail
+        # the launch.
+        b_dydb = self.add_asg_instance_dydb(self.fgt_vm_id)
+        if not b_dydb:
+            self.logger.warning("Could not register the instance in Dynamo DB, continue without the track record.")
 
         # Upload license
         if self.need_license and self.fgt_lic_mgmt != "fmg":
             # Update Serial numbers
             b_succ = self.update_all_sn_list()
-            b_succ = self.upload_license(fgt_private_ip, self.fgt_vm_id)
+            # The license activation can fail transiently: a token generated
+            # right after a serial number reactivation may not be valid on
+            # FortiGuard yet, and a FortiGate just up from boot may reject the
+            # first token. Observed in the field: the same serial number
+            # succeeded on the next attempt seconds later. Retry before giving
+            # up, an instance without an active license gets no configuration
+            # at all, so it joins the cluster with no role set.
+            lic_retry_max = 3
+            for lic_retry in range(lic_retry_max):
+                b_succ = self.upload_license(fgt_private_ip, self.fgt_vm_id)
+                if b_succ:
+                    break
+                if lic_retry < lic_retry_max - 1:
+                    time.sleep(20)
             if not b_succ:
-                return
+                return "failed"
 
         # Configure the FortiGate instance
+        # Initiate as success: when fgt_lic_mgmt is "fmg", FortiGate Manager
+        # pushes the license and configuration, the following block is skipped
+        # and there is no upload result to report.
+        b_succ = True
         if self.fgt_lic_mgmt != "fmg":
             time.sleep(10)
             self.intf_setting = json.loads(os.getenv('network_interfaces'))
@@ -531,27 +638,50 @@ class FgtConf:
             self.fgt_primary_ip, self.fgt_primary_port = self.get_primary_ip(instance_detail['Reservations'][0]['Instances'][0])
 
             config_content = self.gen_config_content(self.fgt_vm_id)
+            if config_content is None:
+                # None marks the configuration generation failed, e.g. the
+                # primary_instance record could not be locked, the instance
+                # would run without its auto-scale role configuration.
+                self.logger.error("Could not generate the configuration content.")
+                return "failed"
             b_succ = self.upload_config(config_content, fgt_private_ip)
+        if not b_succ:
+            return "failed"
+        return "success"
 
-        
+
     def do_terminate(self):
         self.logger.info("Do terminate event.")
         # Upload license
         if self.need_license and self.fgt_lic_mgmt != "fmg":
             # Update Serial numbers
             b_succ = self.update_all_sn_list()
-            # Update license record 
+            # Update license record
             b_updated = self.release_lic(self.fgt_vm_id)
             if not b_updated:
-                used_sn_map = self.get_used_sn_map()
-                if self.fgt_vm_id in used_sn_map:
-                    sn = used_sn_map.pop(self.fgt_vm_id)
-                    self.update_used_sn_map(used_sn_map)
-                    self.add_available_sn({sn})
-                    # Deactive current token
-                    oauth_token = self.get_fortiflex_oauth_token()
-                    if oauth_token:
-                        self.stop_sn(sn, oauth_token)
+                # Get oauth token outside the lock since it may take seconds when token expired
+                oauth_token = self.get_fortiflex_oauth_token()
+                if not oauth_token:
+                    self.logger.error("Could not get valid OAuth token, skip release license record.")
+                else:
+                    # Lock fortiflex category for the used_sn_map restore: the SN must be
+                    # moved from used to available atomically. stop_sn is kept inside the
+                    # lock: if the SN were restored but stopped outside the lock, a concurrent
+                    # launch could pick the restored SN and activate it before stop_sn deactivates it.
+                    b_locked = self.lock_dydb("fortiflex")
+                    if b_locked:
+                        try:
+                            used_sn_map = self.get_used_sn_map()
+                            if self.fgt_vm_id in used_sn_map:
+                                sn = used_sn_map.pop(self.fgt_vm_id)
+                                self.update_used_sn_map(used_sn_map)
+                                self.add_available_sn({sn})
+                                # Deactive current token
+                                self.stop_sn(sn, oauth_token)
+                        finally:
+                            self.unlock_dydb("fortiflex")
+                    else:
+                        self.logger.error("Could not lock fortiflex in Dynamo DB, skip release license record.")
         # Update instance info on Dynamo DB
         self.remove_asg_instance_dydb(self.fgt_vm_id)
         if self.enable_fgt_system_autoscale:
@@ -565,6 +695,7 @@ class FgtConf:
                     }]
                 )
             self.check_primary(self.fgt_vm_id)
+        return "success"
 
 # Instance information
     def get_private_ip(self, instance):
@@ -662,13 +793,22 @@ class FgtConf:
                 }
             }
             b_succ, response = self.invoke_lambda(payload, "fgt")
-            if b_succ:
-                used_sn_map = self.get_used_sn_map()
-                used_sn_map[fgt_vm_id] = sn_or_file_name
-                self.update_used_sn_map(used_sn_map)
-            else:
-                self.add_available_sn({sn_or_file_name})
-                self.logger.error("Could not activate the token on FortiGate instance.")
+            # Lock fortiflex category for the used_sn_map update or SN restore.
+            # The license upload above takes long time, keep it outside the lock.
+            b_locked = self.lock_dydb("fortiflex")
+            if not b_locked:
+                self.logger.error("Could not lock fortiflex in Dynamo DB after license upload.")
+                return False
+            try:
+                if b_succ:
+                    used_sn_map = self.get_used_sn_map()
+                    used_sn_map[fgt_vm_id] = sn_or_file_name
+                    self.update_used_sn_map(used_sn_map)
+                else:
+                    self.add_available_sn({sn_or_file_name})
+                    self.logger.error("Could not activate the token on FortiGate instance.")
+            finally:
+                self.unlock_dydb("fortiflex")
         elif license_type == "file":
             lic_file_content = self.get_lic_file_content(license_content)
             payload = {
@@ -728,20 +868,38 @@ class FgtConf:
         if not oauth_token:
             self.logger.info(f"Could not get valid OAuth token.")
             return "", "", ""
+        # Lock fortiflex category for the read-claim-write of the available SN.
+        # The reactivate and token generation must stay inside the lock to reserve the
+        # SN, otherwise two concurrent launches could pick the same SN.
+        b_locked = self.lock_dydb("fortiflex")
+        if not b_locked:
+            self.logger.error("Could not lock fortiflex in Dynamo DB, could not get license token.")
+            return "", "", ""
         # Get serial number and generate vm token
-        dydb_items = self.get_item_from_dydb("fortiflex", ["available_sn_list"])
-        available_sn_list = dydb_items.get("available_sn_list", [])
-        if available_sn_list:
-            for cur_sn in available_sn_list:
-                b_succ = self.reactivate_sn(cur_sn, oauth_token)
-                if not b_succ:
-                    continue
-                vm_token = self.generate_vm_token(cur_sn, oauth_token)
-                if vm_token:
-                    self.remove_available_sn({cur_sn})
-                    return "token", vm_token, cur_sn
-        else:
-            self.logger.info("Could not get available serial number.")
+        license_type = ""
+        license_content = ""
+        sn_or_file_name = ""
+        try:
+            dydb_items = self.get_item_from_dydb("fortiflex", ["available_sn_list"])
+            available_sn_list = dydb_items.get("available_sn_list", [])
+            if available_sn_list:
+                for cur_sn in available_sn_list:
+                    b_succ = self.reactivate_sn(cur_sn, oauth_token)
+                    if not b_succ:
+                        continue
+                    vm_token = self.generate_vm_token(cur_sn, oauth_token)
+                    if vm_token:
+                        self.remove_available_sn({cur_sn})
+                        license_type = "token"
+                        license_content = vm_token
+                        sn_or_file_name = cur_sn
+                        break
+            else:
+                self.logger.info("Could not get available serial number.")
+        finally:
+            self.unlock_dydb("fortiflex")
+        if license_type:
+            return license_type, license_content, sn_or_file_name
 
         return "", "", ""
 
@@ -1119,7 +1277,7 @@ class FgtConf:
     def update_fortiflex_oauth_token(self, oauth_token):
         b_succ = self.put_item_to_dydb("fortiflex", "oauth_token", oauth_token)
         return b_succ
-    
+
     def get_fortiflex_refresh_token(self):
         dydb_items = self.get_item_from_dydb("fortiflex", ["oauth_refresh_token"])
         oauth_refresh_token = dydb_items.get("oauth_refresh_token", "")
@@ -1252,45 +1410,146 @@ class FgtConf:
         if not config_sn_list:
             config_sn_list = []
         # get config ID list given by user, and get all available SNs under the config IDs
-        configid_list = json.loads(os.getenv("fortiflex_configid_list"))
-        if not configid_list:
-            configid_list = []
-        for configid in configid_list:
+        configid_list_total = []
+        if self.configid_list:
+            configid_list_total = self.configid_list
+        if self.configname_list:
+            configid_list_by_name = self.convert_config_name_to_id(self.configname_list)
+            configid_list_total = list(set(configid_list_total) | set(configid_list_by_name))
+        for configid in configid_list_total:
             cur_sn_list = self.get_sn_by_configid(configid)
             config_sn_list.extend(cur_sn_list)
 
         # get used SN list
-        used_sn_map = self.get_used_sn_map()
-        used_sn_set = set(used_sn_map.values())
-        config_sn_list.extend(used_sn_set)
-        if not config_sn_list:
+        # Lock fortiflex category for the read-modify-write of SN lists.
+        # The FortiFlex API collection above and the re-license upload below are outside the lock.
+        b_locked = self.lock_dydb("fortiflex")
+        if not b_locked:
+            self.logger.error("Could not lock fortiflex in Dynamo DB, skip update all serial number list.")
             return False
-        all_sn_list = set(config_sn_list)
-        self.all_sn_list = all_sn_list
-        # Update all_sn_list in Dynamo DB
-        dydb_all_sn_list = []
-        dydb_items = self.get_item_from_dydb("fortiflex", ["all_sn_list"])
-        dydb_all_sn_list = set(dydb_items.get("all_sn_list", []))
-        if all_sn_list != dydb_all_sn_list:
-            # Update all_sn_list
-            self.put_item_to_dydb("fortiflex", "all_sn_list", all_sn_list)
-        # Update available_sn_list
-        new_available_sn_list = all_sn_list - used_sn_set
-        removed_sn_list = dydb_all_sn_list - all_sn_list
-        if new_available_sn_list:
-            self.add_available_sn(new_available_sn_list)
-        if removed_sn_list:
-            self.remove_available_sn(removed_sn_list)
-            for instance_id, sn in used_sn_map.items():
-                if sn in removed_sn_list:
-                    self.logger.info(f"Change license for instance {instance_id}")
-                    instance_detail = self.ec2_client.describe_instances(InstanceIds=[instance_id])
-                    cur_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0]) 
-                    if not cur_private_ip:
-                        self.logger.info(f"Can not find private IP for instance: {instance_id}")
-                        continue
-                    self.upload_license(cur_private_ip, instance_id)
+        relink_instance_list = []
+        try:
+            used_sn_map = self.get_used_sn_map()
+            used_sn_set = set(used_sn_map.values())
+            config_sn_list.extend(used_sn_set)
+            if not config_sn_list:
+                return False
+            all_sn_list = set(config_sn_list)
+            self.all_sn_list = all_sn_list
+            # Update all_sn_list in Dynamo DB
+            dydb_all_sn_list = []
+            dydb_items = self.get_item_from_dydb("fortiflex", ["all_sn_list"])
+            dydb_all_sn_list = set(dydb_items.get("all_sn_list", []))
+            if all_sn_list != dydb_all_sn_list:
+                # Update all_sn_list
+                self.put_item_to_dydb("fortiflex", "all_sn_list", all_sn_list)
+            # Update available_sn_list
+            new_available_sn_list = all_sn_list - used_sn_set
+            removed_sn_list = dydb_all_sn_list - all_sn_list
+            if new_available_sn_list:
+                self.add_available_sn(new_available_sn_list)
+            if removed_sn_list:
+                self.remove_available_sn(removed_sn_list)
+                for instance_id, sn in used_sn_map.items():
+                    if sn in removed_sn_list:
+                        relink_instance_list.append((instance_id, sn))
+        finally:
+            self.unlock_dydb("fortiflex")
+        # Change license for the instances whose SN was removed. Keep it outside the lock
+        # since upload license takes long time (license upload and FortiGate reboot).
+        for instance_id, sn in relink_instance_list:
+            self.logger.info(f"Change license for instance {instance_id}")
+            instance_detail = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+            cur_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
+            if not cur_private_ip:
+                self.logger.info(f"Can not find private IP for instance: {instance_id}")
+                continue
+            self.upload_license(cur_private_ip, instance_id)
         return True
+
+    def convert_config_name_to_id(self, configname_list):
+        self.logger.info(f"Convert config name list to config id list: {configname_list}")
+        configid_list = []
+        if not configname_list:
+            self.logger.info(f"configname_list is empty")
+            return configid_list
+        # Get config name to config id map
+        configname_to_configid_map = self.get_configname_to_configid_map()
+        if not configname_to_configid_map:
+            self.logger.info(f"Could not get config name to config id map.")
+            return configid_list
+        # Generate config id list based on the map and input config name list
+        for configname in configname_list:
+            if configname in configname_to_configid_map:
+                configid_list.append(configname_to_configid_map[configname])
+            else:
+                self.logger.info(f"Could not find config id for config name: {configname}")
+        self.logger.info(f"Config id list: {configid_list}")
+        return configid_list
+
+    def get_configname_to_configid_map(self):
+        self.logger.info("Get config name to config id map.")
+        oauth_token = self.get_fortiflex_oauth_token()
+        if not oauth_token:
+            self.logger.info(f"Could not get valid OAuth token.")
+            return {}
+        # Get program serial number, which is required by configs/list API
+        program_serial_number = self.get_program_serial_number(oauth_token)
+        if not program_serial_number:
+            self.logger.info(f"Could not get program serial number.")
+            return {}
+        configname_to_configid_map = {}
+        url = "https://support.fortinet.com/ES/api/fortiflex/v2/configs/list"
+        header = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {oauth_token}"
+        }
+        body = {
+            "programSerialNumber": program_serial_number
+        }
+        response = requests.post(url, headers=header, json=body, verify=False, timeout=10)
+        if response.status_code == 200:
+            response_json = response.json()
+            if response_json:
+                if "configs" in response_json and response_json["configs"]:
+                    for ele in response_json["configs"]:
+                        cur_configid = ele["id"]
+                        cur_configname = ele["name"]
+                        configname_to_configid_map[cur_configname] = cur_configid
+                else:
+                    if "error" in response_json and response_json["error"]:
+                        err_msg = response_json["error"]
+                        self.logger.error(f"Could not get configs, error msg: {err_msg}")
+            else:
+                self.logger.info("Could not get http return status")
+        response.close()
+        return configname_to_configid_map
+
+    def get_program_serial_number(self, oauth_token):
+        self.logger.info("Get program serial number.")
+        program_serial_number = ""
+        url = "https://support.fortinet.com/ES/api/fortiflex/v2/programs/list"
+        header = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {oauth_token}"
+        }
+        response = requests.post(url, headers=header, json={}, verify=False, timeout=10)
+        if response.status_code == 200:
+            response_json = response.json()
+            if response_json:
+                if "programs" in response_json and response_json["programs"]:
+                    for ele in response_json["programs"]:
+                        if "serialNumber" in ele and ele["serialNumber"]:
+                            program_serial_number = ele["serialNumber"]
+                            break
+                else:
+                    if "error" in response_json and response_json["error"]:
+                        err_msg = response_json["error"]
+                        self.logger.error(f"Could not get programs, error msg: {err_msg}")
+            else:
+                self.logger.info("Could not get http return status")
+        response.close()
+        return program_serial_number
 
     def get_sn_by_configid(self, configid):
         self.logger.info("Get serial numbers by config id.")
@@ -1434,27 +1693,50 @@ class FgtConf:
                     "parameters" : {
                         "category" : category,
                         "attribute_name": attribute_name,
-                        "attribute_content": attribute_content
+                        "attribute_content": attribute_content,
+                        "lock_id": self.dydb_lock_id if category in self.locked_category_list else ""
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
+                # Must be synchronous: the write has to complete before unlock_dydb clears the lock,
+                # otherwise the write lands after the lock is released and is dropped by the condition check.
+                b_succ, rst = self.invoke_lambda(payload, "fgt")
             else:
                 aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
                 if not aws_format_content:
                     self.logger.info(f"Attribute content is empty: {attribute_content}")
                     return self.remove_item_from_dydb(category, attribute_name, attribute_content)
-                response = self.dynamodb_client.update_item(
-                    TableName=self.dynamodb_table_name,
-                    Key={
-                        'Category': {
-                            'S': category,
-                        }
-                    },
-                    AttributeUpdates={
-                        attribute_name: {
-                            'Value': aws_format_content
-                        }
-                    })
+                # When the category is locked by current lock id, only allow the update if the lock id matches and the lock is not expired
+                if category in self.locked_category_list:
+                    update_expression = 'SET #attr = :val'
+                    expression_attribute_names = {'#attr': attribute_name, '#lock': 'lock'}
+                    expression_attribute_values = {
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': self.dydb_lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    }
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression=update_expression,
+                        ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                        ExpressionAttributeNames=expression_attribute_names,
+                        ExpressionAttributeValues=expression_attribute_values)
+                else:
+                    # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression='SET #attr = :val',
+                        ExpressionAttributeNames={'#attr': attribute_name},
+                        ExpressionAttributeValues={':val': aws_format_content})
                 b_succ = True
         except Exception as err:
             self.logger.error(f"Could not update item in Dynamo DB table: {err}")
@@ -1470,10 +1752,13 @@ class FgtConf:
                     "parameters" : {
                         "category" : category,
                         "attribute_name": attribute_name,
-                        "attribute_content": attribute_content
+                        "attribute_content": attribute_content,
+                        "lock_id": self.dydb_lock_id if category in self.locked_category_list else ""
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
+                # Must be synchronous: the write has to complete before unlock_dydb clears the lock,
+                # otherwise the write lands after the lock is released and is dropped by the condition check.
+                b_succ, rst = self.invoke_lambda(payload, "fgt")
             else:
                 if type(attribute_content) not in [set, int, float]:
                     self.logger.error(f"Could not do the ADD operation for attribute type: {type(attribute_content)}")
@@ -1482,19 +1767,38 @@ class FgtConf:
                 if not aws_format_content:
                     self.logger.info(f"Attribute content is empty: {attribute_content}")
                     return False
-                response = self.dynamodb_client.update_item(
-                    TableName=self.dynamodb_table_name,
-                    Key={
-                        'Category': {
-                            'S': category,
-                        }
-                    },
-                    AttributeUpdates={
-                        attribute_name: {
-                            'Value': aws_format_content,
-                            'Action': 'ADD'
-                        }
-                    })
+                # When the category is locked by current lock id, only allow the update if the lock id matches and the lock is not expired
+                if category in self.locked_category_list:
+                    update_expression = 'ADD #attr :val'
+                    expression_attribute_names = {'#attr': attribute_name, '#lock': 'lock'}
+                    expression_attribute_values = {
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': self.dydb_lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    }
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression=update_expression,
+                        ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                        ExpressionAttributeNames=expression_attribute_names,
+                        ExpressionAttributeValues=expression_attribute_values)
+                else:
+                    # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression='ADD #attr :val',
+                        ExpressionAttributeNames={'#attr': attribute_name},
+                        ExpressionAttributeValues={':val': aws_format_content})
                 b_succ = True
         except Exception as err:
             self.logger.error(f"Could not add item in Dynamo DB table: {err}")
@@ -1510,20 +1814,132 @@ class FgtConf:
                     "parameters" : {
                         "category" : category,
                         "attribute_name": attribute_name,
-                        "attribute_content": attribute_content
+                        "attribute_content": attribute_content,
+                        "lock_id": self.dydb_lock_id if category in self.locked_category_list else ""
                     }
                 }
-                b_succ, rst = self.invoke_lambda(payload, "fgt", "Event")
+                # Must be synchronous: the write has to complete before unlock_dydb clears the lock,
+                # otherwise the write lands after the lock is released and is dropped by the condition check.
+                b_succ, rst = self.invoke_lambda(payload, "fgt")
             else:
                 aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
                 if not aws_format_content:
                     self.logger.info(f"Attribute content is empty: {attribute_content}")
                     return False
-                attribute_value = {
-                    'Action': 'DELETE'
+                # When the category is locked by current lock id, only allow the update if the lock id matches and the lock is not expired
+                if category in self.locked_category_list:
+                    update_expression = 'DELETE #attr :val'
+                    expression_attribute_names = {'#attr': attribute_name, '#lock': 'lock'}
+                    expression_attribute_values = {
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': self.dydb_lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    }
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression=update_expression,
+                        ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                        ExpressionAttributeNames=expression_attribute_names,
+                        ExpressionAttributeValues=expression_attribute_values)
+                else:
+                    # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression='DELETE #attr :val',
+                        ExpressionAttributeNames={'#attr': attribute_name},
+                        ExpressionAttributeValues={':val': aws_format_content})
+                b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
+        return b_succ
+
+    def lock_dydb(self, category, lock_expire_seconds=120):
+        # Already locked this category by current object, return directly to support reentrant lock
+        if category in self.locked_category_list:
+            return True
+        b_succ = False
+        expire_time = int(time.time()) + lock_expire_seconds
+        if self.enable_privatelink_dydb:
+            payload = {
+                "service" : "dynamodb",
+                "operation" : "lock_item",
+                "parameters" : {
+                    "category" : category,
+                    "lock_id": self.dydb_lock_id,
+                    "expire_time": expire_time
                 }
-                if aws_format_content:
-                    attribute_value["Value"] = aws_format_content
+            }
+            b_succ, rst = self.invoke_lambda(payload, "fgt")
+        else:
+            max_loop = 60
+            for i in range(max_loop):
+                try:
+                    response = self.dynamodb_client.update_item(
+                        TableName=self.dynamodb_table_name,
+                        Key={
+                            'Category': {
+                                'S': category,
+                            }
+                        },
+                        UpdateExpression='SET #lock = :lock_val',
+                        ConditionExpression='attribute_not_exists(#lock) OR attribute_not_exists(#lock.lock_id) OR #lock.lock_id = :empty OR :now > #lock.expire_time',
+                        ExpressionAttributeNames={
+                            '#lock': 'lock'
+                        },
+                        ExpressionAttributeValues={
+                            ':lock_val': {
+                                'M': {
+                                    'lock_id': {'S': self.dydb_lock_id},
+                                    'expire_time': {'N': str(expire_time)}
+                                }
+                            },
+                            ':empty': {'S': ''},
+                            ':now': {'N': str(int(time.time()))}
+                        }
+                    )
+                    b_succ = True
+                    break
+                except botocore.exceptions.ClientError as e:
+                    if e.response['Error']['Code'] == "ConditionalCheckFailedException":
+                        time.sleep(2)
+                        # Update expire time for next retry, lock id keep the same in object level
+                        expire_time = int(time.time()) + lock_expire_seconds
+                        continue
+                    break
+                except Exception as err:
+                    self.logger.error(f"Could not lock DynamoDB: {err}")
+                    break
+        if b_succ:
+            self.locked_category_list.append(category)
+        return b_succ
+
+    def unlock_dydb(self, category):
+        b_succ = False
+        # Not locked this category by current object, return directly
+        if category not in self.locked_category_list:
+            return True
+        if self.enable_privatelink_dydb:
+            payload = {
+                "service" : "dynamodb",
+                "operation" : "unlock_item",
+                "parameters" : {
+                    "category" : category,
+                    "lock_id": self.dydb_lock_id
+                }
+            }
+            b_succ, rst = self.invoke_lambda(payload, "fgt")
+        else:
+            try:
                 response = self.dynamodb_client.update_item(
                     TableName=self.dynamodb_table_name,
                     Key={
@@ -1531,13 +1947,24 @@ class FgtConf:
                             'S': category,
                         }
                     },
-                    AttributeUpdates={
-                        attribute_name: attribute_value
+                    UpdateExpression='SET #lock = :empty_lock',
+                    ExpressionAttributeNames={
+                        '#lock': 'lock'
+                    },
+                    ExpressionAttributeValues={
+                        ':empty_lock': {
+                            'M': {
+                                'lock_id': {'S': ''},
+                                'expire_time': {'S': ''}
+                            }
+                        }
                     }
                 )
                 b_succ = True
-        except Exception as err:
-            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
+            except Exception as err:
+                self.logger.error(f"Could not unlock DynamoDB: {err}")
+        if b_succ:
+            self.locked_category_list.remove(category)
         return b_succ
 
     def convert_to_aws_dydb_format(self, input_value):
@@ -1620,32 +2047,44 @@ class FgtConf:
 
     def add_asg_instance_dydb(self, instance_id):
         self.logger.info("Add instance ID to Dynamo DB table.")
-        cur_list = self.get_asg_instance_list_dydb()
-        for instance_dict in cur_list:
-            if instance_id in instance_dict.values():
-                self.logger.info(f"Instance already in the instance list of DynamoDB: {instance_id}")
-                return True
-        cur_list.append({
-            'S': instance_id
-        })
-        b_succ= False
+        b_succ = False
+        b_locked = self.lock_dydb("asg_instances")
+        if not b_locked:
+            self.logger.error("Could not lock asg_instances in Dynamo DB.")
+            return False
         try:
+            cur_list = self.get_asg_instance_list_dydb()
+            for instance_dict in cur_list:
+                if instance_id in instance_dict.values():
+                    self.logger.info(f"Instance already in the instance list of DynamoDB: {instance_id}")
+                    return True
+            cur_list.append({
+                'S': instance_id
+            })
             b_succ = self.put_item_to_dydb("asg_instances", "instance_list", cur_list)
         except Exception as err:
             self.logger.error(f"Could not add instance ID to Dynamo DB table: {err}")
+        finally:
+            self.unlock_dydb("asg_instances")
         return b_succ
 
     def remove_asg_instance_dydb(self, instance_id):
         self.logger.info("Remove instance ID from Dynamo DB table.")
-        cur_list = self.get_asg_instance_list_dydb()
-        for instance_dict in cur_list:
-            if instance_id in instance_dict.values():
-                cur_list.remove(instance_dict)
-        b_succ= False
+        b_succ = False
+        b_locked = self.lock_dydb("asg_instances")
+        if not b_locked:
+            self.logger.error("Could not lock asg_instances in Dynamo DB.")
+            return False
         try:
+            cur_list = self.get_asg_instance_list_dydb()
+            for instance_dict in cur_list:
+                if instance_id in instance_dict.values():
+                    cur_list.remove(instance_dict)
             b_succ = self.put_item_to_dydb("asg_instances", "instance_list", cur_list)
         except Exception as err:
             self.logger.error(f"Could not remove instance ID to Dynamo DB table: {err}")
+        finally:
+            self.unlock_dydb("asg_instances")
         return b_succ
 
     def get_instance_dict(self, state_name_list):
@@ -1686,11 +2125,129 @@ class FgtConf:
         except Exception as err:
             self.logger.error(f"Could not update primary instance information: {err}")
         return b_succ
+
+    def is_instance_running(self, instance_id):
+        # Check whether the instance still exists and is in the running state.
+        # Used to detect a stale primary record: the recorded primary can be
+        # terminated outside a terminate event, e.g. by deleting the ASG, so
+        # no re-election ever ran and the record points at a dead instance.
+        # Return True (running), False (surely not running any more) or
+        # None (could not determine, e.g. an API error: caller keeps the
+        # record then, a wrong clear would create a second primary).
+        try:
+            instance_detail = self.ec2_client.describe_instances(InstanceIds=[instance_id])
+            instance_list = instance_detail.get('Reservations', [{}])[0].get('Instances', []) if instance_detail.get('Reservations') else []
+            cur_state = instance_list[0].get('State', {}).get('Name') if instance_list else "not found"
+            if cur_state == "running":
+                return True
+            return False
+        except botocore.exceptions.ClientError as err:
+            # A not-found instance is a definitive answer: the primary instance
+            # does not exist any more (e.g. the whole ASG was deleted long ago
+            # and the terminated instances left the describe window), so the
+            # stale record can be cleared. Other client errors (throttling,
+            # network) stay undetermined: return None to keep the record, a
+            # wrong clear would create a second primary.
+            if err.response.get("Error", {}).get("Code") == "InvalidInstanceID.NotFound":
+                return False
+            return None
+        except Exception as err:
+            return None
+
+# Primary election rules
+    def get_instance_license_type(self, instance):
+        # Get the license type of the instance by its AWS marketplace product codes.
+        # ProductCodes elements are dicts like {'ProductCodeId': ..., 'ProductCodeType': ...},
+        # build a set of the ids only: dicts themselves are not hashable.
+        cur_product_code_set = {cur_code.get("ProductCodeId") for cur_code in instance.get("ProductCodes", [])}
+        for lic_type, product_code in self.license_product_code_map.items():
+            if product_code in cur_product_code_set:
+                return lic_type
+        return ""
+
+    def instance_matches_election_rules(self, instance):
+        # Check whether the instance matches the primary election rules
+        # in self.primary_election. All the configured rules must match.
+        fgt_vm_id = instance.get("InstanceId")
+        allowed_asg_names = self.primary_election.get("allowed_asg_names", None)
+        if allowed_asg_names:
+            cur_asg_name = ""
+            for tag in instance.get("Tags", []):
+                if tag.get("Key") == "aws:autoscaling:groupName":
+                    cur_asg_name = tag.get("Value", "")
+                    break
+            # The instance tag carries the full ASG name with the module prefix,
+            # the configured names do not, so match by suffix.
+            if not cur_asg_name or not any(cur_asg_name == name or cur_asg_name.endswith(name) for name in allowed_asg_names):
+                return False
+        allowed_license_types = self.primary_election.get("allowed_license_types", None)
+        if allowed_license_types:
+            cur_license_type = self.get_instance_license_type(instance)
+            if not cur_license_type or cur_license_type not in allowed_license_types:
+                return False
+        return True
+
+    def filter_primary_candidates(self, instance_id_list, running_instance_dict):
+        # Sort the primary candidate instance list by the primary election rules
+        # in self.primary_election. The rules are a preference, not a hard
+        # requirement: instances matching the rules are elected first, but when
+        # no instance matches, the remaining running instances are still
+        # eligible, so the cluster always has a primary.
+        matched_id_list = []
+        unmatched_id_list = []
+        for cur_vm_id in instance_id_list:
+            instance = running_instance_dict.get(cur_vm_id)
+            if not instance:
+                continue
+            if self.instance_matches_election_rules(instance):
+                matched_id_list.append(cur_vm_id)
+            else:
+                unmatched_id_list.append(cur_vm_id)
+        # Sort the candidates by the instance launch time first, then by the AZ
+        # preference: python sort is stable, so the launch time keeps working as
+        # the second sort key inside each AZ preference class.
+        order_by = self.primary_election.get("order_by", "oldest")
+        matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
+        unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
+        if order_by == "newest":
+        # preferred_azs is a soft preference: instances in these AZs are sorted
+        # before the others, the others are still eligible when there is no
+        # instance in these AZs.
+        preferred_azs = self.primary_election.get("preferred_azs", None)
+        if preferred_azs:
+            matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
+            unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
+        if not matched_id_list and unmatched_id_list:
+        # The matched candidates come first, the unmatched ones are only elected
+        # when there is no matched candidate (or no matched candidate could be
+        # configured).
+        return matched_id_list + unmatched_id_list
     
     def check_primary(self, fgt_vm_id):
         self.logger.info(f"Check and update primary record in Dynamo DB.")
+        # Lock primary_instance and asg_instances for the whole primary election,
+        # so two concurrent terminates can not elect two primaries. The config upload
+        # to FortiGate inside takes time, but the election decision and the primary
+        # record update must be atomic, so keep them in the same lock range.
+        b_locked_1 = self.lock_dydb("primary_instance")
+        b_locked_2 = self.lock_dydb("asg_instances")
+        if not b_locked_1 or not b_locked_2:
+            self.logger.error("Could not lock primary_instance/asg_instances in Dynamo DB, skip check primary.")
+            self.unlock_dydb("primary_instance")
+            self.unlock_dydb("asg_instances")
+            return
         # FortiGate instance auto-scaling configuration
         primary_instance_id, primary_ip = self.get_primary()
+        if primary_instance_id and primary_instance_id != fgt_vm_id:
+            # The recorded primary can be stale, e.g. the whole ASG was deleted
+            # between deployments: no terminate event ran for it, so the record
+            # was never cleared and every new launch joins as a secondary of a
+            # dead primary. Re-elect below when the primary is not running.
+            b_running = self.is_instance_running(primary_instance_id)
+            if b_running is False:
+                self.update_primary("", "")
+                primary_instance_id = None
+                primary_ip = None
         if not primary_instance_id or primary_instance_id == fgt_vm_id:
             fgt_port = ""
             if self.fgt_login_port_number:
@@ -1703,6 +2260,9 @@ class FgtConf:
             fgt_instanceid_list = []
             for instance_dict in fgt_instanceid_list_dict:
                 fgt_instanceid_list.extend(instance_dict.values())
+            # Apply the primary election rules (allowed ASGs, license types,
+            # newest first) to filter and sort the candidates.
+            fgt_instanceid_list = self.filter_primary_candidates(fgt_instanceid_list, running_instance_dict)
             for cur_vm_id in fgt_instanceid_list:
                 if cur_vm_id not in running_instance_dict:
                     continue
@@ -1802,12 +2362,14 @@ class FgtConf:
                     self.logger.error(f"Could not update system auto-scale for FortiGate {cur_vm_id}")
 
             self.update_tags(
-                secondary_resource_list, 
+                secondary_resource_list,
                 [{
                     'Key': 'Autoscale Role',
                     'Value': 'Secondary'
                 }]
             )
+        self.unlock_dydb("primary_instance")
+        self.unlock_dydb("asg_instances")
 
 # FortiGate configuration
     def gen_config_content(self, fgt_vm_id):
@@ -1819,6 +2381,17 @@ class FgtConf:
         az_name_map = json.loads(os.getenv('az_name_map'))
         rst = ""
 
+        # The device indexes existing on this instance. A non-critical
+        # interface whose create/attach failed does not block the launch, so
+        # the configuration of the missing interface must be skipped too,
+        # otherwise the interface commands reference a port which does not
+        # exist and the whole configuration upload fails.
+        instance_detail = self.ec2_client.describe_instances(InstanceIds=[fgt_vm_id])
+        existing_device_indexes = set()
+        if instance_detail and instance_detail['Reservations'] and instance_detail['Reservations'][0]['Instances']:
+            for intf in instance_detail['Reservations'][0]['Instances'][0]['NetworkInterfaces']:
+                existing_device_indexes.add(intf.get("Attachment").get("DeviceIndex"))
+
         # unset auth-lockout-duration 
         if fgt_multi_vdom:
             rst += "config global\n"
@@ -1829,6 +2402,11 @@ class FgtConf:
             rst += "end\n"
         # Geneve tunnel
         for intf_name, intf_conf in self.intf_setting.items():
+            # Skip the interface which does not exist on this instance (a
+            # non-critical interface whose create/attach failed before).
+            if intf_conf.get("device_index") not in existing_device_indexes:
+                self.logger.warning(f"Skip the configuration of the interface {intf_name}, it does not exist on the instance.")
+                continue
             vdom = intf_conf.get("vdom", "root")
             if fgt_multi_vdom:
                 rst += f"config vdom\nedit {vdom}\n"
@@ -1876,13 +2454,78 @@ class FgtConf:
 
         # FortiGate instance auto-scaling configuration
         if self.enable_fgt_system_autoscale:
-            primary_instance_id, primary_ip = self.get_primary()
-            if not primary_instance_id:
-                self.update_primary(fgt_vm_id, self.fgt_primary_ip)
-                primary_instance_id = fgt_vm_id
-                primary_ip = self.fgt_primary_ip
-                if self.primary_scalein_protection:
-                    self.set_primary_scalein_protection(fgt_vm_id)
+            # Lock primary_instance for the primary claim: check-then-set must be atomic,
+            # otherwise two concurrent launches could both become primary.
+            b_locked = self.lock_dydb("primary_instance")
+            if not b_locked:
+                self.logger.error("Could not lock primary_instance in Dynamo DB.")
+                # None marks the generation failed, an empty string would be
+                # a valid (empty) configuration.
+                return None
+            try:
+                primary_instance_id, primary_ip = self.get_primary()
+                if primary_instance_id and primary_instance_id != fgt_vm_id:
+                    # The recorded primary can be stale, e.g. the whole ASG was
+                    # deleted between deployments: no terminate event runs then,
+                    # so no re-election ever clears the record and every new
+                    # launch would join as a secondary of a dead primary. Treat
+                    # a primary that is not running any more as empty and claim
+                    # a new primary below.
+                    b_running = self.is_instance_running(primary_instance_id)
+                    if b_running is False:
+                        self.update_primary("", "")
+                        primary_instance_id = None
+                        primary_ip = None
+                if not primary_instance_id:
+                    # The first claim of an empty primary is also an election, so the
+                    # instance must match the primary election rules. Otherwise wait a
+                    # while and re-check: a rule-matching instance may launch and claim
+                    # the empty primary, then this instance can join as a secondary.
+                    instance_detail = self.ec2_client.describe_instances(InstanceIds=[fgt_vm_id])
+                    cur_instance = instance_detail['Reservations'][0]['Instances'][0] if instance_detail['Reservations'] and instance_detail['Reservations'][0]['Instances'] else {}
+                    if self.instance_matches_election_rules(cur_instance):
+                        self.update_primary(fgt_vm_id, self.fgt_primary_ip)
+                        primary_instance_id = fgt_vm_id
+                        primary_ip = self.fgt_primary_ip
+                        if self.primary_scalein_protection:
+                            self.set_primary_scalein_protection(fgt_vm_id)
+                    else:
+                        # Wait a while and re-check whether a primary has appeared.
+                        # Release the lock during the wait, otherwise other instances
+                        # can not claim the empty primary and the wait never succeeds.
+                        self.unlock_dydb("primary_instance")
+                        # Wait up to 60 seconds in total, check the primary every 10 seconds.
+                        primary_wait_timeout = 60
+                        primary_wait_interval = 10
+                        waited_time = 0
+                        while waited_time < primary_wait_timeout:
+                            time.sleep(primary_wait_interval)
+                            waited_time += primary_wait_interval
+                            primary_instance_id, primary_ip = self.get_primary()
+                            if primary_instance_id:
+                                break
+                        if not primary_instance_id:
+                            # Still no primary after the wait: claim the primary as a
+                            # fallback, otherwise this instance gets no usable auto-scale
+                            # configuration.
+                            if not self.lock_dydb("primary_instance"):
+                                self.logger.error("Could not lock primary_instance in Dynamo DB.")
+                                # None marks the generation failed, an empty
+                                # string would be a valid (empty) configuration.
+                                return None
+                            try:
+                                # Re-check under the lock to avoid racing a concurrent claim.
+                                primary_instance_id, primary_ip = self.get_primary()
+                                if not primary_instance_id:
+                                    self.update_primary(fgt_vm_id, self.fgt_primary_ip)
+                                    primary_instance_id = fgt_vm_id
+                                    primary_ip = self.fgt_primary_ip
+                                    if self.primary_scalein_protection:
+                                        self.set_primary_scalein_protection(fgt_vm_id)
+                            finally:
+                                self.unlock_dydb("primary_instance")
+            finally:
+                self.unlock_dydb("primary_instance")
             autoscale_role = "Primary"
             if primary_instance_id == fgt_vm_id:
                 temp_str = ""
@@ -2035,6 +2678,12 @@ def clean_terminated_vms(logger, intf_object, fgtconf_object):
     fgt_instanceid_list = []
     for instance_dict in fgt_instanceid_list_dict:
         fgt_instanceid_list.extend(instance_dict.values())
+    # Also check the primary instance: it can be missing from the instance list
+    # (e.g. its add write was lost), and terminating it is what triggers check_primary
+    # to re-elect a primary or clear the stale primary record.
+    primary_instance_id, primary_ip = fgtconf_object.get_primary()
+    if primary_instance_id and primary_instance_id not in fgt_instanceid_list:
+        fgt_instanceid_list.append(primary_instance_id)
     # Check instances that been terminated but not been clean up. This may happens when terminate event not been triggered, like manually terminate the instance.
     clean_id_list = []
     for vm_id in fgt_instanceid_list:
@@ -2048,47 +2697,132 @@ def clean_terminated_vms(logger, intf_object, fgtconf_object):
         fgtconf_object.set_vm_id(vm_id)
         fgtconf_object.do_terminate()
 
-def complete_lifecycle(logger, event_detail):
-    logger.info("Complete lifecycle action.")
+def complete_lifecycle(logger, event_detail, result="ABANDON"):
+    logger.info(f"Complete lifecycle action with result: {result}.")
     asg_client = boto3.client('autoscaling')
     try:
         asg_client.complete_lifecycle_action(
             LifecycleHookName=event_detail.get('LifecycleHookName', ""),
             AutoScalingGroupName=event_detail.get('AutoScalingGroupName', ""),
             LifecycleActionToken=event_detail.get('LifecycleActionToken', ""),
-            LifecycleActionResult='CONTINUE'
+            LifecycleActionResult=result
         )
     except ClientError as e:
         logger.error(f"Error completing life cycle hook for instance: {e.response['Error']['Code']}")
 
+# How tolerant the launch is to failures. ABANDON terminates the instance, the
+# ASG replaces it with a new one.
+# - strict : any launch failure abandons the instance, the ASG gets only fully
+#            working instances, at the cost of possible launch/replace loops
+#            when a failure repeats.
+# - normal : a failure of a required part abandons the instance. Failures of
+#            optional parts (e.g. a public IP association, the DynamoDB track
+#            record) and of non-critical additional interfaces only degrade
+#            the launch, the instance stays.
+# - lenient: no launch failure abandons the instance. Keep it for debugging
+#            (a replaced instance loses its failure state) and for the first
+#            deployments before the setup is verified.
+LAUNCH_TOLERANCE_LEVELS = ["strict", "normal", "lenient"]
+
+def abandon_on_launch_failure(logger, failure_kind, tolerance, event_detail, fgt_vm_id):
+    # Decide from the failure kind and the tolerance level whether to abandon
+    # the instance. Returns True when the hook was completed and the handler
+    # must stop processing.
+    abandon = False
+    if tolerance == "strict":
+        abandon = True
+    elif tolerance == "normal":
+        # Only the required-part failures ("failed") abandon, the degraded
+        # launches (optional-part failures) continue.
+        abandon = (failure_kind == "failed")
+    # lenient: never abandon.
+    if abandon:
+        logger.info(f"{failure_kind} launch of instance {fgt_vm_id} is beyond the tolerance {tolerance}, abandon the instance.")
+        complete_lifecycle(logger, event_detail, result="ABANDON")
+    else:
+        logger.warning(f"{failure_kind} launch of instance {fgt_vm_id} within the tolerance {tolerance}, keep the instance.")
+    return abandon
+
+def get_launch_tolerance(logger):
+    tolerance = os.getenv('lambda_failure_tolerance', 'lenient')
+    if tolerance not in LAUNCH_TOLERANCE_LEVELS:
+        logger.warning(f"Unknown lambda_failure_tolerance: {tolerance}, fall back to lenient.")
+        tolerance = "lenient"
+    return tolerance
+
 def lambda_handler(event, context):
     logger = logging.getLogger("fgt_asg_lambda")
     logger.setLevel(logging.INFO)
-    event_detail = event["detail"]
-    fgt_vm_id = event["detail"]["EC2InstanceId"]
-    detail_type = event["detail-type"]
+    # Defaults keep the exception handler below working when the event is malformed
+    event_detail = {}
+    detail_type = ""
+    try:
+        event_detail = event["detail"]
+        fgt_vm_id = event_detail["EC2InstanceId"]
+        detail_type = event["detail-type"]
+        hook_name = event_detail.get('LifecycleHookName', '')
 
-    # Initiate objects
-    intf_object = NetworkInterface(logger)
-    fgtconf_object = FgtConf(logger)
+        # Early skip: the EventBridge rule routes all the lifecycle events of the
+        # ASG to this Lambda, skip the hooks not managed by this Lambda, like
+        # the hooks from other automations on the same ASG.
+        managed_hooks = ['fgt_asg_launch_hook', 'fgt_asg_terminate_hook']
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+            # The hook name may contain a module_prefix, so check the managed
+            # hook name as a substring of the hook name.
+            if not any(managed_hook in hook_name for managed_hook in managed_hooks):
+                logger.info(f"Skip unmanaged lifecycle hook: {hook_name}.")
+                return {}
 
-    # If detail_type is launch related, check and clean the VMs before main operation
-    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance Launch Successful"]:
-        clean_terminated_vms(logger, intf_object, fgtconf_object)
+        # Initiate objects
+        intf_object = NetworkInterface(logger)
+        fgtconf_object = FgtConf(logger)
 
-    ## Network Interface operations
-    intf_object.set_vm_id(fgt_vm_id)
-    intf_object.main(detail_type)
+        # If detail_type is launch related, check and clean the VMs before main operation
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance Launch Successful"]:
+            clean_terminated_vms(logger, intf_object, fgtconf_object)
 
-    ## FortiGate configuration operations
-    fgtconf_object.set_vm_id(fgt_vm_id)
-    fgtconf_object.main(detail_type)
+        ## Network Interface operations
+        intf_object.set_vm_id(fgt_vm_id)
+        intf_outcome = intf_object.main(detail_type)
+        if detail_type == "EC2 Instance-launch Lifecycle Action" and intf_outcome in ["failed", "degraded"]:
+            tolerance = get_launch_tolerance(logger)
+            if abandon_on_launch_failure(logger, intf_outcome, tolerance, event_detail, fgt_vm_id):
+                return {}
 
-    # If detail_type is terminate related, check and clean the VMs after main operation
-    if detail_type == "EC2 Instance-terminate Lifecycle Action":
-        clean_terminated_vms(logger, intf_object, fgtconf_object)
-    if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
-        complete_lifecycle(logger, event_detail)
-    return {}
+        ## FortiGate configuration operations
+        fgtconf_object.set_vm_id(fgt_vm_id)
+        fgtconf_outcome = fgtconf_object.main(detail_type)
+        if detail_type == "EC2 Instance-launch Lifecycle Action" and fgtconf_outcome in ["failed", "degraded"]:
+            tolerance = get_launch_tolerance(logger)
+            if abandon_on_launch_failure(logger, fgtconf_outcome, tolerance, event_detail, fgt_vm_id):
+                return {}
+
+        # If detail_type is terminate related, check and clean the VMs after main operation
+        if detail_type in ["EC2 Instance-terminate Lifecycle Action", "EC2 Instance Terminate Successful"]:
+            clean_terminated_vms(logger, intf_object, fgtconf_object)
+
+        # Complete the managed lifecycle hook after all the operations succeeded
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+            complete_lifecycle(logger, event_detail, result="CONTINUE")
+        return {}
+    except Exception as e:
+        logger.error(f"Unexpected error in fgt_asg_lambda: {e}")
+        # Only the lifecycle action events have a hook to complete. An
+        # unexpected error abandons the hook so the ASG does not wait for its
+        # timeout, except under lenient tolerance which keeps the instance
+        # alive for debugging and lets the hook continue.
+        if detail_type in ["EC2 Instance-launch Lifecycle Action", "EC2 Instance-terminate Lifecycle Action"]:
+            if detail_type == "EC2 Instance-terminate Lifecycle Action":
+                # On termination ABANDON does not cancel the termination, it
+                # only stops the remaining hooks, so complete with CONTINUE
+                # to let the other hooks run.
+                complete_lifecycle(logger, event_detail, result="CONTINUE")
+            else:
+                tolerance = get_launch_tolerance(logger)
+                if tolerance != "lenient":
+                    complete_lifecycle(logger, event_detail, result="ABANDON")
+                else:
+                    complete_lifecycle(logger, event_detail, result="CONTINUE")
+        return {}
 
 

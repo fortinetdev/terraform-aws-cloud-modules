@@ -204,6 +204,7 @@ module "fgt_asg" {
   fortiflex_password             = lookup(each.value, "fortiflex_password", null) != null ? each.value.fortiflex_password : lookup(var.fgt_config_shared, "fortiflex_password", null) != null ? var.fgt_config_shared.fortiflex_password : ""
   fortiflex_sn_list              = lookup(each.value, "fortiflex_sn_list", null) != null ? each.value.fortiflex_sn_list : lookup(var.fgt_config_shared, "fortiflex_sn_list", null) != null ? var.fgt_config_shared.fortiflex_sn_list : []
   fortiflex_configid_list        = lookup(each.value, "fortiflex_configid_list", null) != null ? each.value.fortiflex_configid_list : lookup(var.fgt_config_shared, "fortiflex_configid_list", null) != null ? var.fgt_config_shared.fortiflex_configid_list : []
+  fortiflex_configname_list      = lookup(each.value, "fortiflex_configname_list", null) != null ? each.value.fortiflex_configname_list : lookup(var.fgt_config_shared, "fortiflex_configname_list", null) != null ? var.fgt_config_shared.fortiflex_configname_list : []
   keypair_name                   = lookup(each.value, "keypair_name", null) != null ? each.value.keypair_name : lookup(var.fgt_config_shared, "keypair_name", null)
   enable_fgt_system_autoscale    = lookup(each.value, "enable_fgt_system_autoscale", null) != null ? each.value.enable_fgt_system_autoscale : lookup(var.fgt_config_shared, "enable_fgt_system_autoscale", null) != null ? var.fgt_config_shared.enable_fgt_system_autoscale : false
   fgt_system_autoscale_psksecret = lookup(each.value, "fgt_system_autoscale_psksecret", null) != null ? each.value.fgt_system_autoscale_psksecret : lookup(var.fgt_config_shared, "fgt_system_autoscale_psksecret", null) != null ? var.fgt_config_shared.fgt_system_autoscale_psksecret : ""
@@ -220,9 +221,11 @@ module "fgt_asg" {
       lookup(each.value, "user_conf_content", "") != "" ? each.value.user_conf_content : lookup(var.fgt_config_shared, "user_conf_content", "")
     )
   )
-  user_conf_s3     = lookup(each.value, "user_conf_s3", null) != null ? each.value.user_conf_s3 : lookup(var.fgt_config_shared, "user_conf_s3", null) != null ? var.fgt_config_shared.user_conf_s3 : {}
-  fmg_integration  = jsondecode(lookup(each.value, "fmg_integration", null) != null ? jsonencode(each.value.fmg_integration) : jsonencode(lookup(var.fgt_config_shared, "fmg_integration", null)))
-  metadata_options = lookup(each.value, "metadata_options", null) != null ? each.value.metadata_options : lookup(var.fgt_config_shared, "metadata_options", null)
+  user_conf_s3         = lookup(each.value, "user_conf_s3", null) != null ? each.value.user_conf_s3 : lookup(var.fgt_config_shared, "user_conf_s3", null) != null ? var.fgt_config_shared.user_conf_s3 : {}
+  fmg_integration      = jsondecode(lookup(each.value, "fmg_integration", null) != null ? jsonencode(each.value.fmg_integration) : jsonencode(lookup(var.fgt_config_shared, "fmg_integration", null)))
+  metadata_options     = lookup(each.value, "metadata_options", null) != null ? each.value.metadata_options : lookup(var.fgt_config_shared, "metadata_options", null)
+  iam_instance_profile = lookup(each.value, "iam_instance_profile", null) != null ? each.value.iam_instance_profile : lookup(var.fgt_config_shared, "iam_instance_profile", null) != null ? var.fgt_config_shared.iam_instance_profile : ""
+  primary_election     = lookup(each.value, "primary_election", null) != null ? each.value.primary_election : lookup(var.fgt_config_shared, "primary_election", null)
 
   # Auto Scale Group
   availability_zones         = var.availability_zones
@@ -234,6 +237,7 @@ module "fgt_asg" {
   create_dynamodb_table      = lookup(each.value, "create_dynamodb_table", null)
   dynamodb_table_name        = lookup(each.value, "dynamodb_table_name", null)
   primary_scalein_protection = lookup(each.value, "primary_scalein_protection", false)
+  asg_termination_policies   = lookup(each.value, "asg_termination_policies", null) != null ? each.value.asg_termination_policies : lookup(var.fgt_config_shared, "asg_termination_policies", null)
   health_check_port          = lookup(var.gwlb_health_check, "port", 0)
   health_check_protocol      = lookup(var.gwlb_health_check, "protocol", "")
   dynamodb_privatelink = var.enable_privatelink_dydb ? {
@@ -247,6 +251,7 @@ module "fgt_asg" {
       var.fgt_intf_mode == "1-arm" ? jsonencode({
         mgmt = {
           device_index      = 0
+          critical          = true
           subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
           enable_public_ip  = lookup(each.value, "enable_public_ip", null) != null ? each.value.enable_public_ip : lookup(var.fgt_config_shared, "enable_public_ip", null) != null ? var.fgt_config_shared.enable_public_ip : var.fgt_access_internet_mode == "eip" ? true : false
           to_gwlb           = true
@@ -257,6 +262,7 @@ module "fgt_asg" {
         }) : jsonencode({
         mgmt = {
           device_index      = 1
+          critical          = true
           subnet_id_map     = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_login_") }
           enable_public_ip  = lookup(each.value, "enable_public_ip", null) != null ? each.value.enable_public_ip : lookup(var.fgt_config_shared, "enable_public_ip", null) != null ? var.fgt_config_shared.enable_public_ip : var.fgt_access_internet_mode == "eip" ? true : false
           source_dest_check = true
@@ -265,6 +271,7 @@ module "fgt_asg" {
         },
         internal_traffic = {
           device_index    = 0
+          critical        = true
           to_gwlb         = true
           subnet_id_map   = { for k, v in local.subnets : v["availability_zone"] => v["id"] if startswith(k, "${local.module_prefix}fgt_internal_") }
           security_groups = [local.secgrp_idmap_with_prefixname["${local.module_prefix}${lookup(each.value, "intf_security_group", null) != null ? each.value.intf_security_group["login_port"] : lookup(var.fgt_config_shared, "intf_security_group", null) != null ? var.fgt_config_shared.intf_security_group["login_port"] : ""}"]]
@@ -344,6 +351,7 @@ module "fgt_asg" {
   asg_health_check_type    = "ELB"
   asg_gwlb_tgp             = module.security-vpc-gwlb.gwlb_tgp == null ? null : [module.security-vpc-gwlb.gwlb_tgp.arn]
   lambda_timeout           = 500
+  lambda_failure_tolerance = lookup(each.value, "lambda_failure_tolerance", null) != null ? each.value.lambda_failure_tolerance : lookup(var.fgt_config_shared, "lambda_failure_tolerance", null)
   az_name_map              = local.az_name_map
   module_prefix            = local.module_prefix
   tags = {

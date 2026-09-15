@@ -36,6 +36,9 @@ output "gwlb_endps" {
   value = module.security-vpc-gwlb.gwlb_endps
 }
 
+output "gwlb_endpoint_service" {
+  value = module.security-vpc-gwlb.gwlb_endpoint_service
+}
 
 output "security_route_table" {
   value = module.security_route_table

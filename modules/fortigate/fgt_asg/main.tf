@@ -1,9 +1,13 @@
 locals {
-  chip_type         = strcontains(split(".", var.instance_type)[0], "g") ? "ARM" : "Intel"
-  product_code      = var.license_type == "byol" ? (local.chip_type == "ARM" ? "33ndn84xbrajb9vmu5lxnfpjq" : "dlaioq277sglm5mw1y1dmeuqa") : (local.chip_type == "ARM" ? "8gc40z1w65qjt61p9ps88057n" : "2wqkpek696qhdeo7lbbjncqli")
-  ami_search_string = var.license_type == "byol" ? "FortiGate-VM*(${var.fgt_version}*" : "FortiGate-VM*(${var.fgt_version}*"
-  fos_ami_id        = var.ami_id != "" ? var.ami_id : data.aws_ami.fgt_ami.id
-  asg_name          = "${var.module_prefix}${var.asg_name}"
+  chip_type    = strcontains(split(".", var.instance_type)[0], "g") ? "ARM" : "Intel"
+  product_code = var.license_type == "byol" ? (local.chip_type == "ARM" ? "33ndn84xbrajb9vmu5lxnfpjq" : "dlaioq277sglm5mw1y1dmeuqa") : (local.chip_type == "ARM" ? "8gc40z1w65qjt61p9ps88057n" : "2wqkpek696qhdeo7lbbjncqli")
+  # Product codes of the FortiGate AMIs in AWS marketplace, used by the lambda
+  # to map the instance product codes to license types for primary election.
+  byol_product_code     = local.chip_type == "ARM" ? "33ndn84xbrajb9vmu5lxnfpjq" : "dlaioq277sglm5mw1y1dmeuqa"
+  ondemand_product_code = local.chip_type == "ARM" ? "8gc40z1w65qjt61p9ps88057n" : "2wqkpek696qhdeo7lbbjncqli"
+  ami_search_string     = var.license_type == "byol" ? "FortiGate-VM*(${var.fgt_version}*" : "FortiGate-VM*(${var.fgt_version}*"
+  fos_ami_id            = var.ami_id != "" ? var.ami_id : data.aws_ami.fgt_ami.id
+  asg_name              = "${var.module_prefix}${var.asg_name}"
 }
 
 data "aws_ami" "fgt_ami" {
@@ -107,6 +111,13 @@ resource "aws_launch_template" "fgt" {
       instance_metadata_tags      = metadata_options.value.instance_metadata_tags
     }
   }
+  dynamic "iam_instance_profile" {
+    for_each = var.iam_instance_profile == "" ? {} : { "iam_instance_profile" : var.iam_instance_profile }
+
+    content {
+      name = iam_instance_profile.value
+    }
+  }
 
   tag_specifications {
     resource_type = "instance"
@@ -130,6 +141,7 @@ resource "aws_autoscaling_group" "fgt-asg" {
   health_check_type         = var.asg_health_check_type
   desired_capacity          = var.asg_desired_capacity
   target_group_arns         = var.asg_gwlb_tgp
+  termination_policies      = var.asg_termination_policies
   vpc_zone_identifier       = distinct(values(merge([for k, v in var.network_interfaces : v.subnet_id_map if v.device_index == 0]...)))
 
   launch_template {
@@ -140,7 +152,7 @@ resource "aws_autoscaling_group" "fgt-asg" {
   initial_lifecycle_hook {
     name                 = "${var.module_prefix}fgt_asg_launch_hook"
     default_result       = "CONTINUE"
-    heartbeat_timeout    = 60
+    heartbeat_timeout    = 300
     lifecycle_transition = "autoscaling:EC2_INSTANCE_LAUNCHING"
   }
 
@@ -459,11 +471,15 @@ resource "aws_lambda_function" "fgt_asg_lambda" {
       fortiflex_refresh_token        = var.fortiflex_refresh_token
       fortiflex_sn_list              = jsonencode(var.fortiflex_sn_list)
       fortiflex_configid_list        = jsonencode(var.fortiflex_configid_list)
+      fortiflex_configname_list      = jsonencode(var.fortiflex_configname_list)
       az_name_map                    = jsonencode(var.az_name_map)
       mgmt_intf_index                = var.mgmt_intf_index
       primary_scalein_protection     = var.enable_fgt_system_autoscale && var.primary_scalein_protection
+      primary_election               = jsonencode(var.primary_election)
+      license_product_code_map       = jsonencode({ "byol" : local.byol_product_code, "on_demand" : local.ondemand_product_code })
       health_check_port              = var.health_check_port
       health_check_protocol          = var.health_check_protocol
+      lambda_failure_tolerance       = var.lambda_failure_tolerance
     }
   }
 

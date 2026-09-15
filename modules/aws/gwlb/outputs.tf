@@ -6,6 +6,10 @@ output "gwlb_tgp" {
   value = local.gwlb_tgp
 }
 
+output "gwlb_endpoint_service" {
+  value = local.gwlb_ep_service
+}
+
 output "gwlb_ips" {
   value = {
     for intf_id, intf in data.aws_network_interface.gwlb_intfs :

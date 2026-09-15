@@ -1,5 +1,22 @@
 ## Unreleased
 
+## 1.1.6 (Sep 15, 2026)
+
+IMPROVEMENTS:
+* Fix null pointer issue of fgt-asg-lambda.py;
+* Handle command changes for UMS registry;
+* Fix update conflict issue on Lambda function;
+* Fix stale primary instance record issue: re-elect the primary when the recorded primary instance is not running any more (e.g. the whole ASG was deleted between deployments);
+* Improve license upload to retry when the license activation fails transiently;
+* Improve the first primary claim to follow the primary election rules, and wait for a rule matching instance before falling back to claim;
+* Change default value of lambda_timeout from 300 to 500 on module fgt_asg;
+* Add check of the DynamoDB track table existence when the Lambda function starts, and log a warning with guidance when the table does not exist;
+* Support check_table operation on fgt-asg-lambda-internal.py, so that the public Lambda function can check the track table via the internal lambda in privatelink mode;
+* Update descriptions of create_dynamodb_table and dynamodb_table_name on module fgt_asg to document the module_prefix prepending rule and the table sharing usage between multiple ASGs;
+* Improve the lifecycle hook handling of the Lambda function: complete the hook only after all operations succeed, abandon the hook on launch failure or unexpected error so the misconfigured instance gets terminated and replaced, skip unmanaged hooks, handle malformed events safely, and increase the launch hook heartbeat_timeout from 60 to 300;
+* Classify the launch outcome into success / degraded / failed, so the launch tolerance can decide whether to abandon the instance;
+* Update lambda function to skip change password and upload lic/config when ums enabled
+
 ## 1.1.5 (Mar 23, 2026)
 
 IMPROVEMENTS:

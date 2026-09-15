@@ -22,6 +22,12 @@ variable "keypair_name" {
   type        = string
 }
 
+variable "iam_instance_profile" {
+  description = "The IAM instance profile name that used in FortiGate EC2 instance. If you leave this blank, no instance profile will be attached."
+  type        = string
+  default     = ""
+}
+
 variable "availability_zones" {
   description = "List of one or more availability zones for the group. "
   type        = list(string)
@@ -106,6 +112,7 @@ variable "network_interfaces" {
   Options:
     - device_index       : (Required|int) Integer to define the network interface index. Interface with `0` will be attached at boot time.
     - subnet_id_map      : (Required|map) Subnet ID map to create the ENI in. The key is the Availability Zone name of the subnet, and the value is the Subnet ID.
+    - critical           : (Optional|bool) Whether this interface is required for the instance to work. If true, a failure to create or attach this interface fails the launch and the instance is abandoned (subject to `lambda_failure_tolerance`). If false, the launch continues without the interface and its configuration is skipped. Defaults to false.
     - vdom               : (Optional|string) Vdom name that the interface belongs to. Only works when vdom mode is multi-vdom. Default will be root if not set and vdom mode is multi-vdom.
     - description        : (Optional|string) Description for the network interface.
     - to_gwlb            : (Optional|bool) If set to true, that means this port is connected to the Gateway Load Balancer.
@@ -148,6 +155,7 @@ variable "network_interfaces" {
         for sk, sv in v : contains([
           "device_index",
           "subnet_id_map",
+          "critical",
           "vdom",
           "description",
           "to_gwlb",
@@ -161,7 +169,7 @@ variable "network_interfaces" {
         ], sk)
       ])
     ])
-    error_message = "One or more argument(s) can not be identified, available options: device_index, subnet_id_map, vdom, description, to_gwlb, private_ips, source_dest_check, security_groups, enable_public_ip, public_ipv4_pool, existing_eip_id, mgmt_intf."
+    error_message = "One or more argument(s) can not be identified, available options: device_index, subnet_id_map, critical, vdom, description, to_gwlb, private_ips, source_dest_check, security_groups, enable_public_ip, public_ipv4_pool, existing_eip_id, mgmt_intf."
   }
   validation {
     condition = var.network_interfaces == null ? true : alltrue([
@@ -294,14 +302,20 @@ variable "asg_gwlb_tgp" {
   default     = []
 }
 
+variable "asg_termination_policies" {
+  description = "List of policies to decide how the instances in the Auto Scaling Group should be terminated. The allowed values are OldestInstance, NewestInstance, OldestLaunchConfiguration, ClosestToNextInstanceHour, OldestLaunchTemplate, AllocationStrategy, Default. Additionally, the ARN of a Lambda function can be specified for custom termination policies."
+  type        = list(string)
+  default     = []
+}
+
 variable "create_dynamodb_table" {
-  description = "If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false."
+  description = "If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false.\nNote: The created table name gets the module_prefix prepended (e.g. with module_prefix \"pfx-\" and dynamodb_table_name \"fgt_asg_track_table\", the table is \"pfx-fgt_asg_track_table\"). When multiple ASGs share one table (e.g. hybrid BYOL + on-demand mode where the BYOL ASG creates the table and the on-demand ASG reuses it), set create_dynamodb_table to true only on the ASG that owns the table, and remember that the sharing ASGs must pass the actual (prefixed) table name in dynamodb_table_name."
   type        = bool
   default     = false
 }
 
 variable "dynamodb_table_name" {
-  description = "DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP."
+  description = "DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP.\nNote: This name is used as-is (no module_prefix is prepended). When this ASG shares a table created by another ASG (e.g. hybrid BYOL + on-demand mode), pass the full table name of the table owner, which includes the module prefix if the owner ASG created it with one."
   type        = string
 }
 
@@ -309,6 +323,45 @@ variable "primary_scalein_protection" {
   description = "If true, will set scale-in protection for the primary instance. Only works when enable_fgt_system_autoscale set to true. Default is false."
   type        = bool
   default     = false
+}
+
+variable "primary_election" {
+  description = <<-EOF
+  Rules to elect the primary FortiGate instance. All the rules are optional and can be combined. If not set, the first running instance in the Dynamo DB instance list will be elected as primary.
+  Only works when enable_fgt_system_autoscale set to true.
+  The rules are a preference, not a hard requirement: instances matching the rules are elected first, but when no instance matches (e.g. all the BYOL instances were terminated and only on-demand instances are left), the other running instances are still elected so the cluster always has a primary.
+  Options:
+    - allowed_asg_names     : (Optional|list(string)) Auto Scaling group name list that the primary instance is elected from in priority. The ASG name is the key name of variable asgs without the module prefix.
+    - allowed_license_types : (Optional|list(string)) License type list that the primary instance is elected from in priority. Options: byol, on_demand.
+    - preferred_azs         : (Optional|list(string)) Availability zone name list that the primary instance will be elected from in priority. Instances in these AZs are sorted before the others, but the others are still eligible when there is no instance in these AZs.
+    - order_by              : (Optional|string) How to sort the primary candidates by the instance launch time. Options: oldest, newest. Default is oldest.
+  Format:
+  ```
+    primary_election = {
+        allowed_asg_names     = ["fgt_byol_asg"]
+        allowed_license_types = ["byol"]
+        preferred_azs         = ["us-east-1a"]
+        order_by              = "newest"
+    }
+  ```
+  EOF
+  type = object({
+    allowed_asg_names     = optional(list(string))
+    allowed_license_types = optional(list(string))
+    preferred_azs         = optional(list(string))
+    order_by              = optional(string, "oldest")
+  })
+  default = {}
+  validation {
+    condition = var.primary_election == null ? true : length(lookup(var.primary_election, "allowed_license_types", [])) == 0 ? true : alltrue([
+      for t in var.primary_election.allowed_license_types : contains(["byol", "on_demand"], t)
+    ])
+    error_message = "Value of allowed_license_types in variable primary_election can not be identified. Available options: byol, on_demand."
+  }
+  validation {
+    condition     = var.primary_election == null ? true : contains(["oldest", "newest"], lookup(var.primary_election, "order_by", "oldest"))
+    error_message = "Value of order_by in variable primary_election can not be identified. Available options: oldest, newest."
+  }
 }
 
 variable "scale_policies" {
@@ -390,13 +443,39 @@ variable "dynamodb_privatelink" {
 }
 
 variable "lambda_timeout" {
-  description = "Amount of time your Lambda Function has to run in seconds. Defaults to 300."
+  description = "Amount of time your Lambda Function has to run in seconds. Defaults to 500."
   type        = number
-  default     = 300
+  default     = 500
+}
+
+variable "lambda_failure_tolerance" {
+  description = <<-EOF
+  How tolerant the Lambda is to failures during the FortiGate launch. A launch
+  failure beyond the tolerance abandons the instance, the Auto Scaling group
+  replaces it with a new one.
+  - strict : any launch failure abandons the instance. The Auto Scaling group
+    gets only fully working instances, at the cost of possible launch/replace
+    loops when a failure repeats.
+  - normal : a failure of a required part (license activation, configuration
+    upload, password change, critical interface) abandons the instance.
+    Failures of optional parts (public IP association, DynamoDB track record)
+    and of non-critical additional interfaces only degrade the launch, the
+    instance stays.
+  - lenient: no launch failure abandons the instance.
+    This is the recommended setting for the first deployment: run the setup
+    once, verify the instances work, then tighten the tolerance.
+  Defaults to "lenient".
+  EOF
+  type        = string
+  default     = "lenient"
+  validation {
+    condition     = var.lambda_failure_tolerance == null ? true : contains(["strict", "normal", "lenient"], var.lambda_failure_tolerance)
+    error_message = "The lambda_failure_tolerance must be one of: strict, normal, lenient."
+  }
 }
 
 variable "lic_s3_name" {
-  description = "AWS S3 bucket name that contains FortiGate license files or token json file."
+  description = "AWS S3 bucket name that contains FortiGate license files."
   type        = string
   default     = null
 }
@@ -433,6 +512,12 @@ variable "fortiflex_sn_list" {
 
 variable "fortiflex_configid_list" {
   description = "Config ID list from FortiFlex account that used to activate FortiGate instance."
+  type        = list(any)
+  default     = []
+}
+
+variable "fortiflex_configname_list" {
+  description = "Config Name list from FortiFlex account that used to activate FortiGate instance."
   type        = list(any)
   default     = []
 }

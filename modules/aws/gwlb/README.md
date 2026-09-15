@@ -56,6 +56,7 @@ No modules.
 | Name | Description |
 |------|-------------|
 | <a name="output_gwlb"></a> [gwlb](#output\_gwlb) | n/a |
+| <a name="output_gwlb_endpoint_service"></a> [gwlb\_endpoint\_service](#output\_gwlb\_endpoint\_service) | n/a |
 | <a name="output_gwlb_endps"></a> [gwlb\_endps](#output\_gwlb\_endps) | n/a |
 | <a name="output_gwlb_ips"></a> [gwlb\_ips](#output\_gwlb\_ips) | n/a |
 | <a name="output_gwlb_tgp"></a> [gwlb\_tgp](#output\_gwlb\_tgp) | n/a |

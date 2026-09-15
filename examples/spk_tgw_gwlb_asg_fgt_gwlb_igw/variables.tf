@@ -546,12 +546,13 @@ variable "asgs" {
     - fgt_multi_vdom : (Optional|bool) Flag of FortiGate instance vdom type. `true` will be multi-vdom mode. `false` will be single-vdom mode. Default is `false`.
     - enable_public_ip : (Optional|bool) Flag of whether create public IP for FortiGate instance. Default is `true` if variable fgt_access_internet_mode set to 'eip', `false` if set 'nat_gw'.
     - lic_folder_path : (Optional|string) Folder path of FortiGate license files.
-    - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files or token json file.
+    - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files.
     - fortiflex_refresh_token : (Optional|string) Refresh token used for FortiFlex.
     - fortiflex_username : (Optional|string) Username of FortiFlex API user.
     - fortiflex_password : (Optional|string) Password of FortiFlex API user.
     - fortiflex_sn_list : (Optional|list) Serial number list from FortiFlex account that used to activate FortiGate instance.
     - fortiflex_configid_list : (Optional|list) Config ID list from FortiFlex account that used to activate FortiGate instance.
+    - fortiflex_configname_list : (Optional|list) Config Name list from FortiFlex account that used to activate FortiGate instance.
     - keypair_name : (Required|string) The keypair name for accessing the FortiGate instances.
     - enable_fgt_system_autoscale : (Optional|bool) If true, FotiGate system auto-scale will be set.
     - fgt_system_autoscale_psksecret : (Optional|string) FotiGate system auto-scale psksecret.
@@ -572,6 +573,7 @@ variable "asgs" {
       Options:
         - device_index       : (Required|int) Integer to define the network interface index. Device index starting from 1 if fgt_intf_mode set to 1-arm, 2 for 2-arm.
         - vdom               : (Optional|string) Vdom name that the interface belongs to. Only works when vdom mode is multi-vdom. Default will be root if not set and vdom mode is multi-vdom.
+        - critical           : (Optional|bool) Whether this interface is required for the instance to work. If true, a failure to create or attach this interface fails the launch and the instance is abandoned (subject to lambda_failure_tolerance). If false, the launch continues without the interface and its configuration is skipped. Defaults to false.
         - description        : (Optional|string) Description for the network interface.
         - source_dest_check  : (Optional|bool) Whether to enable source destination checking for the ENI. Defaults false.
         - enable_public_ip   : (Optional|bool) Whether to assign a public IP for the ENI. Defaults to false.
@@ -606,14 +608,23 @@ variable "asgs" {
       - http_put_response_hop_limit : (Optional|number) The desired HTTP PUT response hop limit for instance metadata requests. The larger the number, the further instance metadata requests can travel. Can be an integer from 1 to 64. (Default: 1).
       - http_protocol_ipv6          : (Optional|string) Enables or disables the IPv6 endpoint for the instance metadata service. Can be "enabled" or "disabled".
       - instance_metadata_tags      : (Optional|string) Enables or disables access to instance tags from the instance metadata service. Can be "enabled" or "disabled".
+    - iam_instance_profile : (Optional|string) The IAM instance profile name for the FortiGate instances. If you leave this blank, no instance profile will be attached.
+    - primary_election : (Optional|map) Rules to elect the primary FortiGate instance. All the rules are optional and can be combined. If not set, the first running instance in the Dynamo DB instance list will be elected as primary.
+      Options:
+      - allowed_asg_names     : (Optional|list(string)) Auto Scaling group name list that the primary instance can be elected from. The ASG name is the key name of variable asgs without the module prefix.
+      - allowed_license_types : (Optional|list(string)) License type list that the primary instance can be elected from. Options: byol, on_demand.
+      - preferred_azs         : (Optional|list(string)) Availability zone name list that the primary instance will be elected from in priority. Instances in these AZs are sorted before the others, but the others are still eligible when there is no instance in these AZs.
+      - order_by              : (Optional|string) How to sort the primary candidates by the instance launch time. Options: oldest, newest. Default is oldest.
     Auto Scale Group
     - asg_max_size : (Required|number) Maximum size of the Auto Scaling Group.
     - asg_min_size : (Required|number) Minimum size of the Auto Scaling Group.
     - asg_desired_capacity : (Optional|number) Number of Amazon EC2 instances that should be running in the group.
-    - create_dynamodb_table : (Optional|bool) If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false.
-    - dynamodb_table_name : (Required|string) DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP.
+    - create_dynamodb_table : (Optional|bool) If true, will create the DynamoDB table using dynamodb_table_name as the name. Default is false. In hybrid mode where multiple ASGs share one track table (e.g. BYOL ASG plus on-demand ASG), set it to true only on the ASG that owns the table. The created table name gets the module_prefix prepended.
+    - dynamodb_table_name : (Required|string) DynamoDB table name that used for tracking Auto Scale Group information, such as instance information and primary IP. The name is used as-is (no module_prefix is prepended). When this ASG shares a table created by another ASG, pass the full table name of the table owner, which includes the module prefix if the owner created it with one.
     - privatelink_security_groups : (Optional|string) Security group name list to create interface endpoint.
     - primary_scalein_protection : (Optional|bool) If true, will set scale-in protection for the primary instance. Only works when enable_fgt_system_autoscale set to true. Default is false.
+    - asg_termination_policies : (Optional|list(string)) List of policies that decide which instance the Auto Scaling group terminates on scale-in. Options: OldestInstance, NewestInstance, OldestLaunchConfiguration, ClosestToNextInstanceHour, OldestLaunchTemplate, AllocationStrategy, Default, or the ARN of a Lambda function for a custom policy. If not set (or set to an empty list), the AWS default policy is used, which terminates the instance closest to the next billing hour. "NewestInstance" keeps the long-lived instances (their instance IDs, IP addresses and licenses) stable across scale-out/scale-in cycles, but may unbalance the instance distribution across Availability Zones.
+    - lambda_failure_tolerance : (Optional|string) How tolerant the Lambda is to failures during the FortiGate launch. A launch failure beyond the tolerance abandons the instance, the Auto Scaling group replaces it with a new one. Options: strict (any launch failure abandons the instance), normal (a failure of a required part - license activation, configuration upload, password change, critical interface - abandons the instance; failures of optional parts and of non-critical additional interfaces only degrade the launch), lenient (no launch failure abandons the instance; recommended for the first deployment: run the setup once, verify the instances work, then tighten the tolerance). Defaults to "lenient".
     - asg_health_check_grace_period : (Optional|number) Time (in seconds) after instance comes into service before checking health.
     - scale_policies : (Optional|map) Auto Scaling group scale policies.
       Key is policy name. Options for values of parameter scale_policies:
@@ -700,12 +711,13 @@ variable "fgt_config_shared" {
     - fgt_multi_vdom : (Optional|bool) Flag of FortiGate instance vdom type. `true` will be multi-vdom mode. `false` will be single-vdom mode. Default is `false`.
     - enable_public_ip : (Optional|bool) Flag of whether create public IP for FortiGate instance. Default is `true` if variable fgt_access_internet_mode set to 'eip', `false` if set 'nat_gw'.
     - lic_folder_path : (Optional|string) Folder path of FortiGate license files.
-    - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files or token json file.
+    - lic_s3_name : (Optional|string) AWS S3 bucket name that contains FortiGate license files.
     - fortiflex_refresh_token : (Optional|string) Refresh token used for FortiFlex.
     - fortiflex_username : (Optional|string) Username of FortiFlex API user.
     - fortiflex_password : (Optional|string) Password of FortiFlex API user.
     - fortiflex_sn_list : (Optional|list) Serial number list from FortiFlex account that used to activate FortiGate instance.
     - fortiflex_configid_list : (Optional|list) Config ID list from FortiFlex account that used to activate FortiGate instance.
+    - fortiflex_configname_list : (Optional|list) Config Name list from FortiFlex account that used to activate FortiGate instance.
     - keypair_name : (Required|string) The keypair name for accessing the FortiGate instances.
     - enable_fgt_system_autoscale : (Optional|bool) If true, FotiGate system auto-scale will be set.
     - fgt_system_autoscale_psksecret : (Optional|string) FotiGate system auto-scale psksecret.
@@ -726,6 +738,7 @@ variable "fgt_config_shared" {
       Options:
         - device_index       : (Required|int) Integer to define the network interface index. Device index starting from 1 if fgt_intf_mode set to 1-arm, 2 for 2-arm.
         - vdom               : (Optional|string) Vdom name that the interface belongs to. Only works when vdom mode is multi-vdom. Default will be root if not set and vdom mode is multi-vdom.
+        - critical           : (Optional|bool) Whether this interface is required for the instance to work. If true, a failure to create or attach this interface fails the launch and the instance is abandoned (subject to lambda_failure_tolerance). If false, the launch continues without the interface and its configuration is skipped. Defaults to false.
         - description        : (Optional|string) Description for the network interface.
         - source_dest_check  : (Optional|bool) Whether to enable source destination checking for the ENI. Defaults false.
         - enable_public_ip   : (Optional|bool) Whether to assign a public IP for the ENI. Defaults to false.
@@ -760,6 +773,15 @@ variable "fgt_config_shared" {
       - http_put_response_hop_limit : (Optional|number) The desired HTTP PUT response hop limit for instance metadata requests. The larger the number, the further instance metadata requests can travel. Can be an integer from 1 to 64. (Default: 1).
       - http_protocol_ipv6          : (Optional|string) Enables or disables the IPv6 endpoint for the instance metadata service. Can be "enabled" or "disabled".
       - instance_metadata_tags      : (Optional|string) Enables or disables access to instance tags from the instance metadata service. Can be "enabled" or "disabled".
+    - iam_instance_profile : (Optional|string) The IAM instance profile name for the FortiGate instances. If you leave this blank, no instance profile will be attached.
+    - primary_election : (Optional|map) Rules to elect the primary FortiGate instance. All the rules are optional and can be combined. If not set, the first running instance in the Dynamo DB instance list will be elected as primary.
+      Options:
+      - allowed_asg_names     : (Optional|list(string)) Auto Scaling group name list that the primary instance can be elected from. The ASG name is the key name of variable asgs without the module prefix.
+      - allowed_license_types : (Optional|list(string)) License type list that the primary instance can be elected from. Options: byol, on_demand.
+      - preferred_azs         : (Optional|list(string)) Availability zone name list that the primary instance will be elected from in priority. Instances in these AZs are sorted before the others, but the others are still eligible when there is no instance in these AZs.
+      - order_by              : (Optional|string) How to sort the primary candidates by the instance launch time. Options: oldest, newest. Default is oldest.
+    - asg_termination_policies : (Optional|list(string)) List of policies that decide which instance the Auto Scaling group terminates on scale-in. Options: OldestInstance, NewestInstance, OldestLaunchConfiguration, ClosestToNextInstanceHour, OldestLaunchTemplate, AllocationStrategy, Default, or the ARN of a Lambda function for a custom policy. If not set (or set to an empty list), the AWS default policy is used, which terminates the instance closest to the next billing hour. "NewestInstance" keeps the long-lived instances (their instance IDs, IP addresses and licenses) stable across scale-out/scale-in cycles, but may unbalance the instance distribution across Availability Zones.
+    - lambda_failure_tolerance : (Optional|string) How tolerant the Lambda is to failures during the FortiGate launch. A launch failure beyond the tolerance abandons the instance, the Auto Scaling group replaces it with a new one. Options: strict (any launch failure abandons the instance), normal (a failure of a required part - license activation, configuration upload, password change, critical interface - abandons the instance; failures of optional parts and of non-critical additional interfaces only degrade the launch), lenient (no launch failure abandons the instance; recommended for the first deployment: run the setup once, verify the instances work, then tighten the tolerance). Defaults to "lenient".
 
   Example:
   ```
@@ -790,6 +812,7 @@ variable "fgt_config_shared" {
     fortiflex_password             = optional(string)
     fortiflex_sn_list              = optional(list(string))
     fortiflex_configid_list        = optional(list(string))
+    fortiflex_configname_list      = optional(list(string))
     keypair_name                   = optional(string)
     enable_fgt_system_autoscale    = optional(bool)
     fgt_system_autoscale_psksecret = optional(string)
@@ -804,6 +827,7 @@ variable "fgt_config_shared" {
     extra_network_interfaces = optional(map(object({
       device_index      = optional(number)
       vdom              = optional(string)
+      critical          = optional(bool, false)
       description       = optional(string)
       source_dest_check = optional(bool)
       enable_public_ip  = optional(bool)
@@ -839,6 +863,15 @@ variable "fgt_config_shared" {
       http_protocol_ipv6          = optional(string, null)
       instance_metadata_tags      = optional(string, null)
     }), null)
+    iam_instance_profile = optional(string)
+    primary_election = optional(object({
+      allowed_asg_names     = optional(list(string))
+      allowed_license_types = optional(list(string))
+      preferred_azs         = optional(list(string))
+      order_by              = optional(string, "oldest")
+    }))
+    lambda_failure_tolerance = optional(string)
+    asg_termination_policies = optional(list(string))
   })
   default = {}
 }
@@ -1136,6 +1169,7 @@ variable "enable_east_west_inspection" {
   type        = bool
   default     = true
 }
+
 
 variable "module_prefix" {
   description = "Prefix that will be used in the whole module."

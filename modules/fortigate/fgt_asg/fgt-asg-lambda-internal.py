@@ -5,6 +5,7 @@ import base64
 import urllib
 import requests
 import re
+import uuid
 import boto3
 import botocore
 from botocore.exceptions import ClientError
@@ -394,7 +395,8 @@ class Dynamodb:
             if missed_var_list:
                 self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
                 return
-            b_succ = self.put_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            lock_id = parameters.get("lock_id", "")
+            b_succ = self.put_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"], lock_id)
             if not b_succ:
                 self.return_json['ErrorMsg'] = "Could not put item to DynamoDB."
         elif operation == "add_item":
@@ -402,7 +404,8 @@ class Dynamodb:
             if missed_var_list:
                 self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
                 return
-            b_succ = self.add_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            lock_id = parameters.get("lock_id", "")
+            b_succ = self.add_item_to_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"], lock_id)
             if not b_succ:
                 self.return_json['ErrorMsg'] = "Could not add item to DynamoDB."
         elif operation == "remove_item":
@@ -410,11 +413,50 @@ class Dynamodb:
             if missed_var_list:
                 self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
                 return
-            b_succ = self.remove_item_from_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"])
+            lock_id = parameters.get("lock_id", "")
+            b_succ = self.remove_item_from_dydb(parameters["category"], parameters["attribute_name"], parameters["attribute_content"], lock_id)
             if not b_succ:
                 self.return_json['ErrorMsg'] = "Could not remove item from DynamoDB."
+        elif operation == "lock_item":
+            missed_var_list = Helper.check_missed_var(["category", "lock_id", "expire_time"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            b_succ = self.lock_dydb(parameters["category"], parameters["lock_id"], int(parameters["expire_time"]))
+            if not b_succ:
+                self.return_json['ErrorMsg'] = "Could not lock DynamoDB."
+        elif operation == "unlock_item":
+            missed_var_list = Helper.check_missed_var(["category", "lock_id"], parameters)
+            if missed_var_list:
+                self.return_json['ErrorMsg'] = "Could not find parameter: " + ", ".join(missed_var_list) + "."
+                return
+            b_succ = self.unlock_dydb(parameters["category"], parameters["lock_id"])
+            if not b_succ:
+                self.return_json['ErrorMsg'] = "Could not unlock DynamoDB."
+        elif operation == "check_table":
+            self.return_json['ResponseContent'] = {
+                "table_name" : self.dynamodb_table_name,
+                "table_exist" : self.check_table_exist()
+            }
         else:
             self.return_json['ErrorMsg'] = f"Unknown operation {operation}."
+
+    def check_table_exist(self):
+        self.logger.info(f"Check whether the DynamoDB table {self.dynamodb_table_name} exists.")
+        try:
+            self.dynamodb_client.describe_table(TableName=self.dynamodb_table_name)
+            return True
+        except botocore.exceptions.ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                return False
+            # Could not determine (throttling, network, permission): report
+            # None, the caller keeps silent then and the following operations
+            # log their own errors if the table is really missing.
+            self.logger.info(f"Could not check the DynamoDB table: {e}")
+            return None
+        except Exception as err:
+            self.logger.info(f"Could not check the DynamoDB table: {err}")
+            return None
 
     def get_item_from_dydb(self, category, attributes):
         rst = {}
@@ -436,31 +478,48 @@ class Dynamodb:
             self.logger.error(f"Could not get item from Dynamo DB table: {err}")
         return rst
 
-    def put_item_to_dydb(self, category, attribute_name, attribute_content):
+    def put_item_to_dydb(self, category, attribute_name, attribute_content, lock_id=""):
         aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
         if not aws_format_content:
             self.logger.info(f"Attribute content is empty: {attribute_content}")
-            return self.remove_item_from_dydb(category, attribute_name, attribute_content)
+            return self.remove_item_from_dydb(category, attribute_name, attribute_content, lock_id)
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content
-                    }
-                })
+            # When a lock id is given, only allow the update if the lock id matches and the lock is not expired
+            if lock_id:
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='SET #attr = :val',
+                    ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                    ExpressionAttributeNames={'#attr': attribute_name, '#lock': 'lock'},
+                    ExpressionAttributeValues={
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    })
+            else:
+                # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='SET #attr = :val',
+                    ExpressionAttributeNames={'#attr': attribute_name},
+                    ExpressionAttributeValues={':val': aws_format_content})
             b_succ = True
         except Exception as err:
             self.logger.error(f"Could not update item in Dynamo DB table: {err}")
         return b_succ
 
-    def add_item_to_dydb(self, category, attribute_name, attribute_content):
+    def add_item_to_dydb(self, category, attribute_name, attribute_content, lock_id=""):
         if type(attribute_content) is list:
             attribute_content = set(attribute_content)
         if type(attribute_content) not in [set, int, float]:
@@ -472,25 +531,41 @@ class Dynamodb:
             return False
         b_succ= False
         try:
-            response = self.dynamodb_client.update_item(
-                TableName=self.dynamodb_table_name,
-                Key={
-                    'Category': {
-                        'S': category,
-                    }
-                },
-                AttributeUpdates={
-                    attribute_name: {
-                        'Value': aws_format_content,
-                        'Action': 'ADD'
-                    }
-                })
+            # When a lock id is given, only allow the update if the lock id matches and the lock is not expired
+            if lock_id:
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='ADD #attr :val',
+                    ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                    ExpressionAttributeNames={'#attr': attribute_name, '#lock': 'lock'},
+                    ExpressionAttributeValues={
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    })
+            else:
+                # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='ADD #attr :val',
+                    ExpressionAttributeNames={'#attr': attribute_name},
+                    ExpressionAttributeValues={':val': aws_format_content})
             b_succ = True
         except Exception as err:
             self.logger.error(f"Could not add item in Dynamo DB table: {err}")
         return b_succ
 
-    def remove_item_from_dydb(self, category, attribute_name, attribute_content):
+    def remove_item_from_dydb(self, category, attribute_name, attribute_content, lock_id=""):
         if type(attribute_content) is list:
             attribute_content = set(attribute_content)
         aws_format_content = self.convert_to_aws_dydb_format(attribute_content)
@@ -498,11 +573,86 @@ class Dynamodb:
             self.logger.info(f"Attribute content is empty: {attribute_content}")
             return False
         b_succ = False
-        attribute_value = {
-            'Action': 'DELETE'
-        }
-        if aws_format_content:
-            attribute_value["Value"] = aws_format_content
+        try:
+            # When a lock id is given, only allow the update if the lock id matches and the lock is not expired
+            if lock_id:
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='DELETE #attr :val',
+                    ConditionExpression='#lock.lock_id = :cur_lock_id AND :now < #lock.expire_time',
+                    ExpressionAttributeNames={'#attr': attribute_name, '#lock': 'lock'},
+                    ExpressionAttributeValues={
+                        ':val': aws_format_content,
+                        ':cur_lock_id': {'S': lock_id},
+                        ':now': {'N': str(int(time.time()))}
+                    })
+            else:
+                # No ConditionExpression parameter at all: passing None raises ParamValidationError
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='DELETE #attr :val',
+                    ExpressionAttributeNames={'#attr': attribute_name},
+                    ExpressionAttributeValues={':val': aws_format_content})
+            b_succ = True
+        except Exception as err:
+            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
+        return b_succ
+
+    def lock_dydb(self, category, lock_id, expire_time):
+        self.logger.info(f"Lock DynamoDB, category: {category}, lock id: {lock_id}.")
+        b_succ = False
+        max_loop = 60
+        for i in range(max_loop):
+            try:
+                response = self.dynamodb_client.update_item(
+                    TableName=self.dynamodb_table_name,
+                    Key={
+                        'Category': {
+                            'S': category,
+                        }
+                    },
+                    UpdateExpression='SET #lock = :lock_val',
+                    ConditionExpression='attribute_not_exists(#lock) OR attribute_not_exists(#lock.lock_id) OR #lock.lock_id = :empty OR :now > #lock.expire_time',
+                    ExpressionAttributeNames={
+                        '#lock': 'lock'
+                    },
+                    ExpressionAttributeValues={
+                        ':lock_val': {
+                            'M': {
+                                'lock_id': {'S': lock_id},
+                                'expire_time': {'N': str(expire_time)}
+                            }
+                        },
+                        ':empty': {'S': ''},
+                        ':now': {'N': str(int(time.time()))}
+                    }
+                )
+                b_succ = True
+                break
+            except botocore.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == "ConditionalCheckFailedException":
+                    time.sleep(2)
+                    continue
+                self.logger.error(f"Could not lock DynamoDB: {e}")
+                break
+            except Exception as err:
+                self.logger.error(f"Could not lock DynamoDB: {err}")
+                break
+        return b_succ
+
+    def unlock_dydb(self, category, lock_id):
+        self.logger.info(f"Unlock DynamoDB, category: {category}, lock id: {lock_id}.")
+        b_succ = False
         try:
             response = self.dynamodb_client.update_item(
                 TableName=self.dynamodb_table_name,
@@ -511,13 +661,24 @@ class Dynamodb:
                         'S': category,
                     }
                 },
-                AttributeUpdates={
-                    attribute_name: attribute_value
+                UpdateExpression='SET #lock = :empty_lock',
+                ConditionExpression='#lock.lock_id = :cur_lock_id',
+                ExpressionAttributeNames={
+                    '#lock': 'lock'
+                },
+                ExpressionAttributeValues={
+                    ':empty_lock': {
+                        'M': {
+                            'lock_id': {'S': ''},
+                            'expire_time': {'S': ''}
+                        }
+                    },
+                    ':cur_lock_id': {'S': lock_id}
                 }
             )
             b_succ = True
         except Exception as err:
-            self.logger.error(f"Could not remove item in Dynamo DB table: {err}")
+            self.logger.error(f"Could not unlock DynamoDB: {err}")
         return b_succ
 
     def convert_to_aws_dydb_format(self, input_value):
