@@ -353,7 +353,7 @@ variable "primary_election" {
   })
   default = {}
   validation {
-    condition = var.primary_election == null ? true : length(lookup(var.primary_election, "allowed_license_types", [])) == 0 ? true : alltrue([
+    condition = var.primary_election == null ? true : var.primary_election.allowed_license_types == null ? true : alltrue([
       for t in var.primary_election.allowed_license_types : contains(["byol", "on_demand"], t)
     ])
     error_message = "Value of allowed_license_types in variable primary_election can not be identified. Available options: byol, on_demand."

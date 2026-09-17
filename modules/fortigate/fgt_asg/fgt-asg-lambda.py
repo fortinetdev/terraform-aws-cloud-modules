@@ -585,10 +585,28 @@ class FgtConf:
                 'Value': self.asg_name
             }]
         )
-        # Get private IP
+        # Get private IP. The management ENI is attached by this Lambda and is
+        # eventually-consistent in describe_instances; on fully private
+        # deployments the first lookup can race the attachment and return None.
+        # Retry with a bounded wait before giving up so the ENI (and its
+        # PrivateIpAddress) has time to become visible.
         fgt_private_ip = self.get_private_ip(instance_detail['Reservations'][0]['Instances'][0])
         if not fgt_private_ip:
-            self.logger.error("Can not find private IP.")
+            for _attempt in range(12):  # up to ~12 * 5s = 60s
+                self.logger.info(f"Management ENI private IP not visible yet (attempt {_attempt + 1}); waiting for eventual consistency")
+                time.sleep(5)
+                try:
+                    _inst = self.ec2_client.describe_instances(
+                        InstanceIds=[self.fgt_vm_id]
+                    )['Reservations'][0]['Instances'][0]
+                except Exception as _err:
+                    self.logger.info(f"describe_instances retry failed: {_err}")
+                    continue
+                fgt_private_ip = self.get_private_ip(_inst)
+                if fgt_private_ip:
+                    break
+        if not fgt_private_ip:
+            self.logger.error("Can not find private IP after retries.")
             return "failed"
         # Change password
         if self.fgt_lic_mgmt != "fmg":
@@ -717,22 +735,39 @@ class FgtConf:
         hi_p_ip = ""
         hi_p_port = ""
         hi_index = -1
+        # Track the management interface (device_index == mgmt_intf_index) as a
+        # fallback for deployments where no interface has an EIP association
+        # (e.g. fully private fleets). Without this, the block below falls back
+        # to instance.PrivateIpAddress / port1, which on such deployments is the
+        # data-plane interface (e.g. the GWLB/GENEVE interface), so the autoscale
+        # sync-interface and the recorded primary-ip end up on the wrong
+        # interface and primary->secondary configuration sync fails.
+        mgmt_p_ip = ""
+        mgmt_p_port = ""
         interfaces = instance.get("NetworkInterfaces")
         if not interfaces:
             self.logger.error(f"Could not get network instances.")
             return hi_p_ip, hi_p_port
         for interface in interfaces:
-            if "Association" not in interface:
-                continue
             p_ip = interface.get("PrivateIpAddress")
             d_index = interface.get("Attachment").get("DeviceIndex")
             p_port = f"port{d_index + 1}"
+            if self.mgmt_intf_index and str(d_index) == self.mgmt_intf_index:
+                mgmt_p_ip = p_ip
+                mgmt_p_port = p_port
+            if "Association" not in interface:
+                continue
             if d_index > hi_index:
                 hi_p_ip = p_ip
                 hi_p_port = p_port
+                hi_index = d_index
         if not hi_p_ip:
-            hi_p_ip = instance.get('PrivateIpAddress')
-            hi_p_port = f"port1"
+            if mgmt_p_ip:
+                hi_p_ip = mgmt_p_ip
+                hi_p_port = mgmt_p_port
+            else:
+                hi_p_ip = instance.get('PrivateIpAddress')
+                hi_p_port = "port1"
         return hi_p_ip, hi_p_port
 
 # Invoke lambda function
@@ -2209,7 +2244,6 @@ class FgtConf:
         order_by = self.primary_election.get("order_by", "oldest")
         matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
         unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
-        if order_by == "newest":
         # preferred_azs is a soft preference: instances in these AZs are sorted
         # before the others, the others are still eligible when there is no
         # instance in these AZs.
@@ -2217,7 +2251,6 @@ class FgtConf:
         if preferred_azs:
             matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
             unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
-        if not matched_id_list and unmatched_id_list:
         # The matched candidates come first, the unmatched ones are only elected
         # when there is no matched candidate (or no matched candidate could be
         # configured).

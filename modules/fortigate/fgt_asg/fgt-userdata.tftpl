@@ -36,7 +36,7 @@ config system interface
         set distance 6
         %{ endif ~}
         %{ if lookup(intf_value, "description", "") != "" ~}
-        set description ${intf_value["description"]}
+        set description "${intf_value["description"]}"
         %{ endif ~}
     next
 end
