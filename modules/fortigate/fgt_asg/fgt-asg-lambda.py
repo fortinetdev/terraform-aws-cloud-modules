@@ -218,7 +218,7 @@ class NetworkInterface:
                 self.logger.error(f"Could not get the Subnet ID of AZ: {fgt_az}")
                 return None
             security_groups = intf_conf.get("security_groups", [])
-            if mgmt_intf_index and mgmt_intf_index == intf_conf.get("device_index", ""):
+            if mgmt_intf_index and str(mgmt_intf_index) == str(intf_conf.get("device_index", "")):
                 security_groups.append(sg_allow_lambda)
             intf = self.ec2_client.create_network_interface(
                 Description        = intf_conf["description"] if "description" in intf_conf else "",
@@ -2209,7 +2209,6 @@ class FgtConf:
         order_by = self.primary_election.get("order_by", "oldest")
         matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
         unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("LaunchTime"), reverse=(order_by == "newest"))
-        if order_by == "newest":
         # preferred_azs is a soft preference: instances in these AZs are sorted
         # before the others, the others are still eligible when there is no
         # instance in these AZs.
@@ -2217,7 +2216,6 @@ class FgtConf:
         if preferred_azs:
             matched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
             unmatched_id_list.sort(key=lambda cur_vm_id: running_instance_dict[cur_vm_id].get("Placement", {}).get("AvailabilityZone") not in preferred_azs)
-        if not matched_id_list and unmatched_id_list:
         # The matched candidates come first, the unmatched ones are only elected
         # when there is no matched candidate (or no matched candidate could be
         # configured).
