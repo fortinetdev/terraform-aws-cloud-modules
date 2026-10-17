@@ -1,5 +1,12 @@
 ## Unreleased
 
+BUG FIXES:
+* Fix autoscale configuration sync on fully private deployments (no EIP): `get_primary_ip` in `fgt-asg-lambda.py` now falls back to the management interface (`device_index == mgmt_intf_index`) instead of `port1` when no interface has an EIP association, so `config system auto-scale set sync-interface` and the recorded `primary-ip` use the management interface rather than the data-plane (e.g. GWLB/GENEVE) interface; without this, primary->secondary configuration sync ran over the wrong interface and failed on private-only fleets;
+* Fix launch bootstrap race on module fgt_asg: retry the management ENI private-IP lookup in `do_launch` (bounded ~60s, re-describe on eventual consistency) instead of aborting with "Can not find private IP" on the first attempt, which on private-only instances skipped the whole bootstrap (password/GENEVE/autoscale) and idled to the lambda timeout;
+* Fix cloud-init parse error in `fgt-userdata.tftpl`: quote the interface `set description "${...}"` so descriptions containing spaces or `/` no longer trigger a FortiOS CLI parse error (return -61) that aborted cloud-init before the user configuration was applied;
+* Fix syntax error in `fgt-asg-lambda.py` `filter_primary_candidates`: remove the empty-body `if order_by == "newest":` and `if not matched_id_list and unmatched_id_list:` statements (regression in 1.1.6) that raised an IndentationError and prevented the Lambda from importing;
+* Fix `primary_election` variable validation on module fgt_asg: the default value `{}` crashed the validation because `lookup()` on a typed object returns the null `allowed_license_types` attribute (not the `[]` default) and `length(null)` errors; check the attribute for null explicitly instead;
+
 ## 1.1.6 (Sep 15, 2026)
 
 IMPROVEMENTS:
